@@ -15,6 +15,31 @@ from .jobs import Worker
 from .rf_source import RFSource, reference_date
 
 
+def _setup_logging() -> None:
+    """Console + arquivo rotativo em DATA_DIR/logs/worker.log (para acompanhar remotamente)."""
+    import os
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    from .config import load_env_file
+
+    load_env_file()
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+    try:
+        data_dir = Path(os.getenv("DATA_DIR") or (Path(__file__).resolve().parents[1] / "data"))
+        (data_dir / "logs").mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(data_dir / "logs" / "worker.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    except OSError:
+        root.warning("Não foi possível criar o arquivo de log")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="lead_hunter", description="Worker de importação do JS Lead Hunter")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -24,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("competence", nargs="?", help="AAAA-MM (padrão: mais recente completa)")
     args = p.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _setup_logging()
 
     if args.cmd == "check":
         import os
