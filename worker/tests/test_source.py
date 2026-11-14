@@ -82,6 +82,19 @@ def test_leitura_em_blocos_preserva_linhas(tmp_path):
         zf.writestr("TESTE", b"".join(lines)[:-1])  # último registro sem quebra de linha
     chunks = list(iter_zip_chunks(z, tmp_path / "c", chunk_bytes=4096))
     assert len(chunks) > 10
-    data = b"".join(p.read_bytes() for p, _ in chunks)
-    assert data == b"".join(lines)
+    data = b"".join(p.read_bytes() for p, _ in chunks).decode("utf-8")
+    assert data == b"".join(lines).decode("latin-1")  # blocos saem convertidos para UTF-8
     assert sum(n for _, n in chunks) == 5000
+
+
+def test_conversao_para_utf8():
+    from lead_hunter.transform import to_utf8
+
+    # Latin-1 puro
+    assert to_utf8("SÃO JOÃO".encode("latin-1")).decode() == "SÃO JOÃO"
+    # Windows-1252: aspas tipográficas e travessão (bytes 0x93, 0x94, 0x96)
+    assert to_utf8(b'"\x93BAR DO Z\xc9\x94 \x96 ME"').decode() == '"“BAR DO ZÉ” – ME"'
+    # byte sem mapeamento no cp1252 (0x81) não derruba a leitura
+    assert to_utf8(b"A\x81B").decode() == "A\x81B"
+    # já em UTF-8: inalterado
+    assert to_utf8("Ação".encode()) == "Ação".encode()

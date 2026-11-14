@@ -98,9 +98,28 @@ def iter_zip_chunks(zip_path: Path, out_dir: Path, chunk_bytes: int = 128 * 1024
                 yield _write_chunk(out_dir, zip_path.stem, k, rest + b"\n")
 
 
+def to_utf8(data: bytes) -> bytes:
+    """Converte um bloco para UTF-8.
+
+    Os arquivos da Receita são declarados como Latin-1 (ISO-8859-1), mas trazem
+    caracteres do Windows-1252 (aspas tipográficas, travessão etc.). Blocos que
+    já são UTF-8 válido passam direto.
+    """
+    try:
+        data.decode("utf-8")
+        return data
+    except UnicodeDecodeError:
+        pass
+    # cp1252 cobre os bytes 0x80-0x9F; os 5 bytes sem mapeamento viram o caractere Latin-1 equivalente
+    text = data.decode("cp1252", errors="surrogateescape")
+    if "\udc81" in text or "\udc8d" in text or "\udc8f" in text or "\udc90" in text or "\udc9d" in text:
+        text = "".join(chr(ord(c) - 0xDC00) if 0xDC80 <= ord(c) <= 0xDCFF else c for c in text)
+    return text.encode("utf-8")
+
+
 def _write_chunk(out_dir: Path, stem: str, k: int, data: bytes) -> tuple[Path, int]:
     path = out_dir / f"{stem}.{k:04d}.csv"
-    path.write_bytes(data)
+    path.write_bytes(to_utf8(data))
     return path, data.count(b"\n")
 
 
@@ -113,7 +132,7 @@ def _read_csv_sql(path: Path, columns: list[str], rejects: str) -> str:
     cols = ", ".join(f"'{c}': 'VARCHAR'" for c in columns)
     p = _sqlpath(path)
     return (
-        f"read_csv('{p}', auto_detect=false, header=false, delim=';', quote='\"', escape='\"', encoding='latin-1', "
+        f"read_csv('{p}', auto_detect=false, header=false, delim=';', quote='\"', escape='\"', encoding='utf-8', "
         f"columns={{{cols}}}, null_padding=true, store_rejects=true, rejects_table='{rejects}', "
         f"rejects_scan='{rejects}_scan', parallel=true)"
     )
