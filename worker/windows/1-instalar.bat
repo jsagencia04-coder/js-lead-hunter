@@ -4,6 +4,14 @@ title JS Lead Hunter - Instalacao do worker
 cd /d "%~dp0.."
 set "LOG=%~dp0instalar-log.txt"
 echo Instalacao iniciada em %date% %time% > "%LOG%"
+if not exist "%LOG%" (
+  echo.
+  echo O Windows bloqueou a gravacao de arquivos nesta pasta.
+  echo Mova a pasta JS-Lead-Hunter para fora de Documentos/Area de Trabalho
+  echo ^(por exemplo D:\PROJETOS GIT HUB^) e rode este arquivo de novo.
+  pause
+  exit /b 1
+)
 echo ============================================================
 echo  JS Lead Hunter - instalacao do worker de importacao
 echo  (registro completo em windows\instalar-log.txt)

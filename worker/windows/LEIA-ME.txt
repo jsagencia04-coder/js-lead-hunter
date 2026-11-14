@@ -8,6 +8,11 @@ processa e grava no banco do sistema (Supabase). Precisa de:
     com 15 GB ou mais ele guarda os ZIPs ate o fim, para retomar mais rapido se cair)
   - computador ligado e com internet durante a importacao (pode levar horas)
 
+IMPORTANTE: NAO deixe esta pasta dentro de Documentos, Imagens ou Area de Trabalho.
+  A protecao do Windows (Acesso controlado a pastas) impede o Python de gravar
+  ali e a instalacao falha com "O sistema nao pode encontrar o arquivo especificado".
+  Use, por exemplo, D:\PROJETOS GIT HUB\JS-Lead-Hunter ou C:\JS-Lead-Hunter.
+
 PASSO A PASSO
   1-instalar.bat           instala tudo e abre o .env para voce colar a DATABASE_URL
   2-verificar-receita.bat  confirma que o computador acessa a Receita e mostra a competencia
