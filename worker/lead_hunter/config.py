@@ -2,8 +2,26 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+
+def load_env_file(path: Path | None = None) -> None:
+    """Carrega um arquivo .env simples (CHAVE=valor) sem sobrescrever variáveis já definidas.
+
+    Procura, nesta ordem: o caminho informado, ./.env e worker/.env.
+    """
+    candidates = [path] if path else [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
+    for p in candidates:
+        if p and p.is_file():
+            for raw in p.read_text(encoding="utf-8-sig").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                value = value.split(" #", 1)[0].strip().strip('"').strip("'")
+                os.environ.setdefault(key.strip(), value)
+            return
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -45,7 +63,6 @@ class Settings:
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_region: str = "auto"
-    extra: dict = field(default_factory=dict)
 
     @property
     def s3_enabled(self) -> bool:
@@ -53,6 +70,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        load_env_file()
         url = os.getenv("DATABASE_URL")
         if not url:
             raise SystemExit("DATABASE_URL não definida. Veja worker/.env.example.")
@@ -62,7 +80,7 @@ class Settings:
             rf_base_url=os.getenv("RF_BASE_URL", cls.rf_base_url).rstrip("/"),
             rf_share_token=os.getenv("RF_SHARE_TOKEN", cls.rf_share_token),
             rf_local_dir=os.getenv("RF_LOCAL_DIR") or None,
-            data_dir=Path(os.getenv("DATA_DIR", "/data")),
+            data_dir=Path(os.getenv("DATA_DIR") or (Path(__file__).resolve().parents[1] / "data")),
             lead_window_days=_int("LEAD_WINDOW_DAYS", 90),
             include_branches=_bool("INCLUDE_BRANCHES", False),
             download_connections=_int("DOWNLOAD_CONNECTIONS", 8),

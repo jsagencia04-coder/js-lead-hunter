@@ -1,0 +1,25 @@
+JS LEAD HUNTER - WORKER NO WINDOWS
+==================================
+
+O worker baixa os arquivos oficiais do CNPJ da Receita Federal (cerca de 7 GB),
+processa e grava no banco do sistema (Supabase). Precisa de:
+  - Python 3.12+ (https://www.python.org/downloads/windows/ - marque "Add python.exe to PATH")
+  - uns 40 GB livres no disco onde esta pasta estiver
+  - computador ligado e com internet durante a importacao (pode levar horas)
+
+PASSO A PASSO
+  1-instalar.bat           instala tudo e abre o .env para voce colar a DATABASE_URL
+  2-verificar-receita.bat  confirma que o computador acessa a Receita e mostra a competencia
+  3-iniciar-worker.bat     deixa o worker rodando (atende a Central de importacao do sistema)
+  4-importar-agora.bat     importa imediatamente, sem esperar a interface
+  5-iniciar-com-o-windows.bat (opcional) abre o worker automaticamente ao entrar no Windows
+
+DATABASE_URL
+  Supabase > Project Settings > Database > Connect > "Session pooler" (porta 5432).
+  NAO use a porta 6543. Essa senha e de administrador do banco: nao compartilhe.
+
+DICAS
+  - Plano gratuito do Supabase: no .env use LEAD_WINDOW_DAYS=15 (limite de 500 MB).
+  - Se o download cair, rode de novo: ele continua de onde parou.
+  - Configure o Windows para nao suspender durante a importacao
+    (Configuracoes > Sistema > Energia > Suspensao: Nunca, quando ligado na tomada).

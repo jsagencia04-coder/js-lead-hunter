@@ -29,6 +29,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "check":
         import os
 
+        from .config import load_env_file
+
+        load_env_file()
         os.environ.setdefault("DATABASE_URL", "postgresql://nao-usado")
         src = RFSource(Settings.from_env())
         try:

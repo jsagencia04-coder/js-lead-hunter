@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -197,10 +197,11 @@ class RFSource:
             todo = [i for i in range(n_chunks) if i not in done]
             if progress:
                 progress(f"Baixando {rf.name} ({size / 1e6:.0f} MB, {len(todo)} de {n_chunks} partes)")
-            fd = os.open(part, os.O_RDWR)
+            fh = open(part, "r+b")
+            lock = threading.Lock()
             try:
                 with ThreadPoolExecutor(max_workers=self.s.download_connections) as pool:
-                    futs = {pool.submit(self._get_range, url, i * chunk, min(size, (i + 1) * chunk) - 1, fd): i for i in todo}
+                    futs = {pool.submit(self._get_range, url, i * chunk, min(size, (i + 1) * chunk) - 1, fh, lock): i for i in todo}
                     last_save = time.monotonic()
                     for fut in as_completed(futs):
                         fut.result()
@@ -209,7 +210,7 @@ class RFSource:
                             state_file.write_text(json.dumps({"size": size, "done": sorted(done)}))
                             last_save = time.monotonic()
             finally:
-                os.close(fd)
+                fh.close()
                 state_file.write_text(json.dumps({"size": size, "done": sorted(done)}))
         else:
             if progress:
@@ -237,7 +238,7 @@ class RFSource:
         r = self.client.get(url, headers={"Range": "bytes=0-0"})
         return r.status_code == 206
 
-    def _get_range(self, url: str, start: int, end: int, fd: int, attempts: int = 6) -> None:
+    def _get_range(self, url: str, start: int, end: int, fh, lock: threading.Lock, attempts: int = 6) -> None:
         delay = 2.0
         for attempt in range(1, attempts + 1):
             try:
@@ -247,7 +248,9 @@ class RFSource:
                 data = r.content
                 if len(data) != end - start + 1:
                     raise SourceError(f"Parte incompleta {start}-{end}: {len(data)} bytes")
-                os.pwrite(fd, data, start)
+                with lock:  # funciona em Linux, macOS e Windows
+                    fh.seek(start)
+                    fh.write(data)
                 return
             except (httpx.HTTPError, SourceError) as exc:
                 if attempt == attempts:
@@ -272,7 +275,3 @@ def reference_date(files: list[RemoteFile]):
     if not dates:
         return None
     return max(dates).astimezone(ZoneInfo("America/Sao_Paulo")).date()
-
-
-def join_url(base: str, *parts: str) -> str:  # utilitário para testes
-    return urljoin(base.rstrip("/") + "/", "/".join(parts))

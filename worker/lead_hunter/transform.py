@@ -67,9 +67,14 @@ def extract_zip(zip_path: Path, out_dir: Path) -> tuple[Path, int]:
     return out, lines
 
 
+def _sqlpath(path: Path) -> str:
+    """Caminho como literal SQL do DuckDB (barras normais funcionam também no Windows)."""
+    return Path(path).resolve().as_posix().replace("'", "''")
+
+
 def _read_csv_sql(path: Path, columns: list[str], rejects: str) -> str:
     cols = ", ".join(f"'{c}': 'VARCHAR'" for c in columns)
-    p = str(path).replace("'", "''")
+    p = _sqlpath(path)
     return (
         f"read_csv('{p}', auto_detect=false, header=false, delim=';', quote='\"', escape='\"', encoding='latin-1', "
         f"columns={{{cols}}}, null_padding=true, store_rejects=true, rejects_table='{rejects}', "
@@ -102,7 +107,7 @@ def prepare(
     con = duckdb.connect(str(db_path))
     con.execute(f"SET memory_limit='{settings_memory}'")
     con.execute(f"SET threads={int(threads)}")
-    con.execute(f"SET temp_directory='{work_dir / 'duck_tmp'}'")
+    con.execute(f"SET temp_directory='{_sqlpath(work_dir / 'duck_tmp')}'")
     con.execute("SET preserve_insertion_order=false")
 
     def step(msg: str):
@@ -113,7 +118,7 @@ def prepare(
     # ---------------- CNPJs já existentes (para atualização cadastral) ----------------
     con.execute("CREATE TABLE existing (cnpj VARCHAR PRIMARY KEY)")
     if existing_cnpjs and existing_cnpjs.exists() and existing_cnpjs.stat().st_size > 0:
-        con.execute(f"INSERT INTO existing SELECT DISTINCT cnpj FROM read_csv('{existing_cnpjs}', header=true, columns={{'cnpj':'VARCHAR'}})")
+        con.execute(f"INSERT INTO existing SELECT DISTINCT cnpj FROM read_csv('{_sqlpath(existing_cnpjs)}', header=true, columns={{'cnpj':'VARCHAR'}})")
 
     # ---------------- Estabelecimentos ----------------
     est_cols = ", ".join(f'"{c}" VARCHAR' for c in ESTABELECIMENTOS)
@@ -193,7 +198,7 @@ def prepare(
 
     # Exporta para Parquet e transforma com Polars
     for t in ["est", "emp", "sim", "ref_cnae", "ref_mun", "ref_nat"]:
-        con.execute(f"COPY {t} TO '{work_dir / (t + '.parquet')}' (FORMAT parquet)")
+        con.execute(f"COPY {t} TO '{_sqlpath(work_dir / (t + '.parquet'))}' (FORMAT parquet)")
     con.close()
     db_path.unlink(missing_ok=True)
     shutil.rmtree(work_dir / "duck_tmp", ignore_errors=True)
