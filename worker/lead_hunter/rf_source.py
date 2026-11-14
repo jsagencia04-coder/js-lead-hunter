@@ -51,6 +51,10 @@ class SourceError(RuntimeError):
     pass
 
 
+class BudgetExceeded(RuntimeError):
+    """Tempo da execução esgotado; o download continua de onde parou na próxima vez."""
+
+
 class RFSource:
     def __init__(self, settings: Settings):
         self.s = settings
@@ -161,7 +165,7 @@ class RFSource:
         return self._url(competence).rstrip("/") + "/" + name
 
     def fetch(self, competence: str, rf: RemoteFile, dest_dir: Path,
-              progress: Callable[[str], None] | None = None) -> Path:
+              progress: Callable[[str], None] | None = None, deadline: float | None = None) -> Path:
         """Baixa (ou reaproveita) um arquivo, com retomada. Retorna o caminho final."""
         dest_dir.mkdir(parents=True, exist_ok=True)
         final = dest_dir / rf.name
@@ -200,7 +204,8 @@ class RFSource:
             fh = open(part, "r+b")
             lock = threading.Lock()
             try:
-                with ThreadPoolExecutor(max_workers=self.s.download_connections) as pool:
+                pool = ThreadPoolExecutor(max_workers=self.s.download_connections)
+                try:
                     futs = {pool.submit(self._get_range, url, i * chunk, min(size, (i + 1) * chunk) - 1, fh, lock): i for i in todo}
                     last_save = time.monotonic()
                     for fut in as_completed(futs):
@@ -209,6 +214,15 @@ class RFSource:
                         if time.monotonic() - last_save > 5:
                             state_file.write_text(json.dumps({"size": size, "done": sorted(done)}))
                             last_save = time.monotonic()
+                        if deadline and time.monotonic() > deadline:
+                            pool.shutdown(wait=True, cancel_futures=True)
+                            for f, i in futs.items():
+                                if f.done() and not f.cancelled() and f.exception() is None:
+                                    done.add(i)
+                            raise BudgetExceeded(f"Tempo esgotado durante o download de {rf.name} "
+                                                 f"({len(done)}/{n_chunks} partes)")
+                finally:
+                    pool.shutdown(wait=True, cancel_futures=True)
             finally:
                 fh.close()
                 state_file.write_text(json.dumps({"size": size, "done": sorted(done)}))

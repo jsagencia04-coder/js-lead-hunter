@@ -63,6 +63,9 @@ class Settings:
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_region: str = "auto"
+    max_runtime_minutes: int = 0       # 0 = sem limite (modo contínuo)
+    worker_mode: str = "continuo"      # "continuo" (servidor/PC) ou "agendado" (GitHub Actions)
+    worker_interval_min: int = 0       # intervalo entre execuções no modo agendado
 
     @property
     def s3_enabled(self) -> bool:
@@ -97,4 +100,7 @@ class Settings:
             s3_access_key=os.getenv("S3_ACCESS_KEY_ID") or None,
             s3_secret_key=os.getenv("S3_SECRET_ACCESS_KEY") or None,
             s3_region=os.getenv("S3_REGION", "auto"),
+            max_runtime_minutes=_int("MAX_RUNTIME_MINUTES", 0),
+            worker_mode=os.getenv("WORKER_MODE", "continuo"),
+            worker_interval_min=_int("WORKER_INTERVAL_MIN", 0),
         )

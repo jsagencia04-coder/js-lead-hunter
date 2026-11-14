@@ -16,7 +16,7 @@ from . import __version__
 from .config import Settings
 from .layout import REQUIRED_FILES
 from .loader import export_existing_cnpjs, load
-from .rf_source import RFSource, reference_date
+from .rf_source import BudgetExceeded, RFSource, reference_date
 from .storage import Storage
 from .transform import prepare
 
@@ -37,6 +37,10 @@ class Worker:
         self.source = RFSource(settings)
         self.storage = Storage(settings)
         self.last_check = 0.0
+        self.deadline: float | None = None
+        if settings.max_runtime_minutes:
+            # reserva 60 min para processar e gravar depois do último download
+            self.deadline = time.monotonic() + max(5, settings.max_runtime_minutes - 60) * 60
 
     def close(self):
         self.source.close()
@@ -45,7 +49,8 @@ class Worker:
     # ------------------------------------------------------------ estado
     def heartbeat(self, extra: dict | None = None):
         details = {"versao": __version__, "host": socket.gethostname(), "fonte": self.s.rf_mode,
-                   "janela_dias": self.s.lead_window_days, **(extra or {})}
+                   "janela_dias": self.s.lead_window_days, "modo": self.s.worker_mode,
+                   "intervalo_min": self.s.worker_interval_min, **(extra or {})}
         self.state.execute(
             """UPDATE public.integration_status
                   SET status = 'ativo', last_seen_at = now(), details = details || %s::jsonb, updated_at = now()
@@ -56,7 +61,7 @@ class Worker:
             (storage_status, storage_status))
 
     def _log(self, job_id: str, msg: str, level: str = "info"):
-        getattr(log, level if level != "erro" else "error")(msg)
+        {"erro": log.error, "aviso": log.warning}.get(level, log.info)(msg)
         entry = json.dumps([{"em": datetime.now(timezone.utc).isoformat(), "nivel": level, "msg": msg}])
         # mantém só as últimas 300 entradas
         self.state.execute(
@@ -70,15 +75,25 @@ class Worker:
         sets = ", ".join(f"{k} = %s" for k in fields)
         self.state.execute(f"UPDATE public.import_jobs SET {sets} WHERE id = %s", (*fields.values(), job_id))
 
-    def recover_stale_jobs(self):
-        """Jobs que ficaram 'em execução' por queda do worker são marcados como falha."""
-        rows = self.state.execute(
-            """UPDATE public.import_jobs SET status = 'falhou', finished_at = now(),
-                      error_count = error_count + 1,
-                      errors = errors || '[{"msg": "Worker reiniciado durante a execução"}]'::jsonb
-                WHERE status IN ('baixando', 'processando', 'validando') RETURNING id""").fetchall()
+    def recover_stale_jobs(self, resume: bool = False):
+        """Jobs que ficaram 'em execução' por queda do worker.
+
+        resume=True (modo agendado): voltam para 'pendente' e continuam na próxima execução.
+        resume=False: são marcados como falha.
+        """
+        if resume:
+            rows = self.state.execute(
+                """UPDATE public.import_jobs SET status = 'pendente',
+                          log = log || '[{"nivel": "aviso", "msg": "Execução anterior interrompida; retomando"}]'::jsonb
+                    WHERE status IN ('baixando', 'processando', 'validando') RETURNING id""").fetchall()
+        else:
+            rows = self.state.execute(
+                """UPDATE public.import_jobs SET status = 'falhou', finished_at = now(),
+                          error_count = error_count + 1,
+                          errors = errors || '[{"msg": "Worker reiniciado durante a execução"}]'::jsonb
+                    WHERE status IN ('baixando', 'processando', 'validando') RETURNING id""").fetchall()
         for r in rows:
-            log.warning("Job %s marcado como falha (worker reiniciado)", r["id"])
+            log.warning("Job %s interrompido anteriormente (%s)", r["id"], "retomado" if resume else "falhou")
 
     def claim(self) -> dict | None:
         return self.state.execute(
@@ -105,6 +120,9 @@ class Worker:
                 self._run_check(job_id)
             else:
                 self._run_import(job_id, job.get("competence"))
+        except BudgetExceeded as exc:
+            self._update(job_id, status="pendente")
+            self._log(job_id, f"{exc}. Continua na próxima execução.", "aviso")
         except Exception as exc:  # noqa: BLE001 — qualquer falha precisa ficar registrada no job
             log.exception("Job %s falhou", job_id)
             self.state.execute(
@@ -186,7 +204,8 @@ class Worker:
             self._update(job_id, status="baixando")
             path = self.storage.restore(competence, rf, comp_dir)
             if not path:
-                path = self.source.fetch(competence, rf, comp_dir, progress=lambda m: self._log(job_id, m))
+                path = self.source.fetch(competence, rf, comp_dir, progress=lambda m: self._log(job_id, m),
+                                         deadline=self.deadline)
                 self.storage.backup(competence, path)
             self._update(job_id, status="processando")
             self.heartbeat()
@@ -260,12 +279,36 @@ class Worker:
                 log.exception("Erro no laço do worker")
             time.sleep(self.s.poll_seconds)
 
+    def once(self) -> None:
+        """Uma rodada (modo agendado): atende pedidos da interface e verifica nova competência."""
+        log.info("Rodada do worker (fonte=%s, janela=%d dias, limite=%s min)", self.s.rf_mode,
+                 self.s.lead_window_days, self.s.max_runtime_minutes or "sem")
+        self.recover_stale_jobs(resume=True)
+        self.heartbeat()
+        job = self.claim()
+        if not job:
+            self.scheduled_check()
+            job = self.claim()
+        while job:
+            self.run_job(job)
+            self.heartbeat()
+            if self.deadline and time.monotonic() > self.deadline:
+                break
+            job = self.claim()
+        self.heartbeat()
+
     def scheduled_check(self):
         """Verificação automática: se houver competência nova, enfileira a importação."""
         busy = self.state.execute(
             "SELECT 1 FROM public.import_jobs WHERE status IN ('pendente', 'baixando', 'processando', 'validando')"
         ).fetchone()
         if busy:
+            return
+        recent = self.state.execute(
+            """SELECT 1 FROM public.import_jobs WHERE job_type = 'verificacao' AND trigger_type = 'agendado'
+                  AND created_at > now() - make_interval(hours => %s)""", (self.s.check_interval_hours,)).fetchone()
+        current = self.current_competence()
+        if recent and current:
             return
         job_id = self.enqueue("verificacao")
         job = self.claim()

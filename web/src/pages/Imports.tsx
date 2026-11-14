@@ -28,8 +28,12 @@ const INTEGRATION: Record<IntegrationStatus['status'], { label: string; variant:
   erro: { label: 'Erro', variant: 'danger' },
 }
 
-// Worker é considerado conectado se enviou sinal nos últimos 10 minutos
-const HEARTBEAT_MS = 10 * 60 * 1000
+// Worker contínuo: sinal a cada poucos segundos (tolerância 10 min).
+// Worker agendado (GitHub Actions): sinal a cada execução (tolerância 1,5x o intervalo).
+function heartbeatToleranceMs(details: IntegrationStatus['details'] | undefined) {
+  const interval = Number(details?.intervalo_min ?? 0)
+  return Math.max(10, interval * 1.5) * 60 * 1000
+}
 
 function duration(job: ImportJob) {
   if (!job.started_at) return '—'
@@ -67,7 +71,7 @@ export default function Imports() {
   const worker = integrations.find((i) => i.key === 'worker')
   const workerOnline =
     worker?.status === 'ativo' && !!worker.last_seen_at &&
-    Date.now() - new Date(worker.last_seen_at).getTime() < HEARTBEAT_MS
+    Date.now() - new Date(worker.last_seen_at).getTime() < heartbeatToleranceMs(worker.details)
   const current = jobs.find((j) => j.is_current)
   const pending = jobs.find((j) => ['pendente', 'baixando', 'processando', 'validando'].includes(j.status))
 
@@ -79,7 +83,9 @@ export default function Imports() {
     if (error) setError(error.message)
     else setNotice(
       workerOnline
-        ? 'Solicitação registrada. O worker irá processá-la no próximo ciclo.'
+        ? (worker?.details?.modo === 'agendado'
+            ? `Solicitação registrada. O worker roda a cada ${worker.details.intervalo_min} min e vai processá-la na próxima execução.`
+            : 'Solicitação registrada. O worker irá processá-la no próximo ciclo.')
         : 'Solicitação registrada, mas o worker não está conectado. Ela ficará aguardando até o worker ser ativado.',
     )
     setBusy(false)
@@ -119,8 +125,8 @@ export default function Imports() {
 
       {!loading && !workerOnline && (
         <Alert tone="warning" title="Worker de importação não conectado" className="mb-6">
-          O worker Python (DuckDB + Polars) não enviou sinal nos últimos 10 minutos. Enquanto ele não estiver
-          rodando no servidor, as solicitações ficam como “Aguardando worker” e nenhum dado é importado.
+          O worker Python (DuckDB + Polars) não enviou sinal dentro do intervalo esperado. Enquanto ele não estiver
+          rodando, as solicitações ficam como “Aguardando worker” e nenhum dado é importado.
           Veja a seção “Worker” do README para colocá-lo no ar.
         </Alert>
       )}

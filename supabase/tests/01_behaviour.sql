@@ -117,3 +117,13 @@ set role anon;
 select pg_temp.expect_error($$select count(*) from establishments$$, 'anônimo ler estabelecimentos');
 select pg_temp.expect_error($$select count(*) from leads$$, 'anônimo ler leads');
 reset role;
+
+-- Data de referência da competência vigente
+update import_jobs set status = 'concluido', is_current = true, reference_date = current_date - 30
+ where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+select pg_temp.assert((dashboard_metrics() ->> 'data_referencia')::date = current_date - 30, 'dashboard usa a data de referência da base');
+select pg_temp.assert((select count(*) from map_state_counts(7)) = 1, 'mapa usa a data de referência da base');
+select pg_temp.assert((admin_recalculate_leads() ->> 'recomendacoes')::int >= 0, 'recálculo com data de referência');
+reset role;

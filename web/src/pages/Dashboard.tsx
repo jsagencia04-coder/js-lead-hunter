@@ -103,7 +103,8 @@ export default function Dashboard() {
         <Kpi label="Leads convertidos" value={data?.leads_convertidos} />
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        Períodos contados a partir de hoje sobre a data de início de atividade. Situação cadastral ativa não comprova regularidade fiscal.
+        Períodos contados a partir da data de referência da base ({formatDate(data?.data_referencia)}), pela data de início de atividade.
+        A base pública da Receita é publicada por competência, com defasagem. Situação cadastral ativa não comprova regularidade fiscal.
       </p>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">

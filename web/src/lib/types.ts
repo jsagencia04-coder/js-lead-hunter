@@ -110,5 +110,6 @@ export interface DashboardMetrics {
   por_porte: ChartItem[]
   por_mes_abertura: ChartItem[]
   competencia_vigente: { competence: string; reference_date: string | null; finished_at: string } | null
+  data_referencia: string | null
   ultimo_job: { job_type: string; status: string; created_at: string; finished_at: string | null; competence: string | null } | null
 }

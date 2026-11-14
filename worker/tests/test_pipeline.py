@@ -151,3 +151,62 @@ def test_mensagem_de_falha_e_clara(fresh_db, tmp_path):
     assert "zip" in msg or "crc" in msg, msg
     assert not q(fresh_db, "select 1 from import_jobs where is_current")
     assert not q(fresh_db, "select 1 from leads")
+
+
+def test_migrate_em_banco_criado_manualmente(fresh_db):
+    from lead_hunter.migrate import migrate
+
+    # o banco de teste já tem as migrations aplicadas "à mão" (sem controle)
+    first = migrate(fresh_db)
+    assert first == []  # todas reconhecidas pelos marcadores
+    assert len(q(fresh_db, "select * from app_migrations")) == 5
+    assert migrate(fresh_db) == []
+
+
+def test_migrate_em_banco_vazio(tmp_path):
+    import os
+
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    from lead_hunter.migrate import migrate
+    base = os.getenv("TEST_DATABASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("TEST_DATABASE_URL não definida")
+    import subprocess
+    import uuid
+    from pathlib import Path
+    name = "jslh_m_" + uuid.uuid4().hex[:6]
+    with psycopg.connect(base, autocommit=True) as c:
+        c.execute(f"CREATE DATABASE {name}")
+    url = make_conninfo(base, dbname=name)
+    stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
+    subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
+    try:
+        assert len(migrate(url)) == 5
+        assert migrate(url) == []
+    finally:
+        with psycopg.connect(base, autocommit=True) as c:
+            c.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+def test_once_importa_e_respeita_tempo(fresh_db, tmp_path):
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        w = make_worker(fresh_db, rf.url, tmp_path)
+        w.once()  # sem nada pendente: verifica, encontra competência nova e importa
+    cur = q(fresh_db, "select competence, status from import_jobs where is_current")
+    assert cur and cur[0]["competence"] == "2026-10"
+    assert q(fresh_db, "select count(*) n from leads")[0]["n"] == 4  # sem bloqueio cadastrado neste teste
+
+    # tempo esgotado no meio do download: job volta para 'pendente'
+    build_competence(root, "2026-11")
+    with FakeRF(root) as rf:
+        w = make_worker(fresh_db, rf.url, tmp_path)
+        w.deadline = 0.0001  # já vencido
+        job_id = w.enqueue("importacao", "manual", "2026-11")
+        w.run_job(w.claim())
+    job = q(fresh_db, "select status from import_jobs where id = %s", job_id)[0]
+    assert job["status"] == "pendente"

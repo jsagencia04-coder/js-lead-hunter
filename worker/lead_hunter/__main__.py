@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run", help="laço contínuo: atende a interface e verifica novas competências")
     sub.add_parser("check", help="lista a competência mais recente disponível")
+    sub.add_parser("once", help="uma rodada (para execução agendada, ex.: GitHub Actions)")
+    sub.add_parser("migrate", help="aplica as migrations pendentes do banco")
     imp = sub.add_parser("import", help="importa uma competência imediatamente")
     imp.add_argument("competence", nargs="?", help="AAAA-MM (padrão: mais recente completa)")
     args = p.parse_args(argv)
@@ -73,10 +75,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Competência: {comp} | referência: {reference_date(files)} | {len(files)} arquivos | {total / 1e9:.1f} GB")
         return 0
 
+    if args.cmd == "migrate":
+        from .migrate import migrate
+
+        done = migrate(Settings.from_env().database_url)
+        print("Migrations aplicadas: " + (", ".join(done) if done else "nenhuma pendente"))
+        return 0
+
     worker = Worker(Settings.from_env())
     try:
         if args.cmd == "run":
             worker.loop()
+        elif args.cmd == "once":
+            worker.once()
         elif args.cmd == "import":
             job_id = worker.enqueue("importacao", "manual", args.competence)
             job = worker.claim()

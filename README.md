@@ -95,6 +95,25 @@ O worker faz o trabalho pesado:
 
 Ele atende os botões da Central de importação e verifica sozinho, a cada 12 horas, se há competência nova.
 
+### Rodar no GitHub Actions (sem servidor; modo atual)
+
+O workflow `.github/workflows/worker.yml` roda a cada hora. Em cada execução ele:
+
+- aplica as migrations pendentes (`python -m lead_hunter migrate`);
+- atende os pedidos feitos na Central de importação;
+- verifica se há competência nova e importa.
+
+O download continua de onde parou entre uma execução e outra. O teste a partir do GitHub baixou da Receita a cerca de 0,58 MB/s por conexão, ou seja, ~7 GB em menos de 1 hora com 8 conexões. Repositório público não tem limite de minutos.
+
+Configuração em *Settings → Secrets and variables → Actions*:
+
+| Tipo | Nome | Valor |
+|---|---|---|
+| Secret | `DATABASE_URL` | `postgresql://postgres.<ref>:<SENHA>@aws-1-sa-east-1.pooler.supabase.com:5432/postgres` |
+| Variable (opcional) | `LEAD_WINDOW_DAYS` | padrão `7` (Supabase gratuito tem 500 MB); com o plano Pro use `90` |
+
+Para rodar na hora: aba *Actions → Worker de importação → Run workflow*. Atenção: o GitHub desativa workflows agendados após 60 dias sem commits no repositório; se isso acontecer, reative na aba *Actions*.
+
 ### Rodar no Windows (atalhos prontos)
 
 Na pasta `worker/windows/` há arquivos `.bat` numerados: `1-instalar`, `2-verificar-receita`, `3-iniciar-worker`, `4-importar-agora` e `5-iniciar-com-o-windows`. Veja o `LEIA-ME.txt` da pasta.
