@@ -1,0 +1,42 @@
+name: Teste de acesso à Receita
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Competência disponível
+        run: python -m lead_hunter check
+        env:
+          DATABASE_URL: postgresql://nao-usado
+      - name: Velocidade de download (30 s, 1 arquivo pequeno + amostra do maior)
+        run: |
+          python - <<'PY'
+          import time, httpx
+          from lead_hunter.config import Settings
+          from lead_hunter.rf_source import RFSource
+          s = Settings(database_url="x")
+          src = RFSource(s)
+          comp, files = src.latest_complete_competence()
+          big = max(files, key=lambda f: f.size or 0)
+          url = src.file_url(comp, big.name)
+          t0 = time.time(); n = 0
+          with src.client.stream("GET", url, headers={"Range": "bytes=0-104857599"}) as r:
+              print("status", r.status_code)
+              for b in r.iter_bytes(1 << 20):
+                  n += len(b)
+                  if time.time() - t0 > 30: break
+          dt = time.time() - t0
+          print(f"{big.name}: {n/1e6:.1f} MB em {dt:.0f}s = {n/dt/1e6:.2f} MB/s por conexão")
+          PY
