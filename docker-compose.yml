@@ -1,0 +1,15 @@
+# Sobe o worker de importação numa VPS:
+#   cp worker/.env.example worker/.env   (preencha DATABASE_URL)
+#   docker compose up -d --build
+#   docker compose logs -f worker
+services:
+  worker:
+    build: ./worker
+    env_file: ./worker/.env
+    volumes:
+      - lead_hunter_data:/data
+    restart: unless-stopped
+    stop_grace_period: 1m
+
+volumes:
+  lead_hunter_data:
