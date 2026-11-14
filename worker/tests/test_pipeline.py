@@ -40,6 +40,10 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert job["status"] == "concluido", job["errors"]
     assert job["is_current"] and job["competence"] == "2026-10"
     assert job["files_processed"] == 24 and job["records_read"] > 0
+    # ZIPs e temporários removidos ao final (economia de disco)
+    data_dir = tmp_path / "data"
+    assert not (data_dir / "zips" / "2026-10").exists()
+    assert not (data_dir / "work" / "2026-10").exists()
 
     leads = {r["cnpj"]: r for r in q(fresh_db, "select * from lead_list_v")}
     # só matrizes ativas, válidas, na janela e sem bloqueio

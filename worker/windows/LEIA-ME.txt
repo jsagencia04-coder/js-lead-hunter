@@ -4,7 +4,8 @@ JS LEAD HUNTER - WORKER NO WINDOWS
 O worker baixa os arquivos oficiais do CNPJ da Receita Federal (cerca de 7 GB),
 processa e grava no banco do sistema (Supabase). Precisa de:
   - Python 3.12+ (https://www.python.org/downloads/windows/ - marque "Add python.exe to PATH")
-  - uns 40 GB livres no disco onde esta pasta estiver
+  - pelo menos 4 GB livres no disco (o worker baixa e processa um arquivo por vez;
+    com 15 GB ou mais ele guarda os ZIPs ate o fim, para retomar mais rapido se cair)
   - computador ligado e com internet durante a importacao (pode levar horas)
 
 PASSO A PASSO

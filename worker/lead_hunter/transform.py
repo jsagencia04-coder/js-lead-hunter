@@ -67,6 +67,43 @@ def extract_zip(zip_path: Path, out_dir: Path) -> tuple[Path, int]:
     return out, lines
 
 
+def iter_zip_chunks(zip_path: Path, out_dir: Path, chunk_bytes: int = 128 * 1024 * 1024):
+    """Lê o único arquivo do ZIP em blocos de ~chunk_bytes, sempre cortando em fim de linha.
+
+    Cada bloco é gravado num arquivo temporário (apagado pelo chamador). Assim o pico de disco
+    fica em um bloco, em vez do arquivo inteiro descompactado (vários GB). O CRC do ZIP é
+    validado pelo zipfile ao final da leitura.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        members = [m for m in z.infolist() if not m.is_dir()]
+        if len(members) != 1:
+            raise ValueError(f"{zip_path.name}: esperado 1 arquivo no ZIP, encontrado {len(members)}")
+        with z.open(members[0]) as src:
+            rest = b""
+            k = 0
+            while True:
+                buf = src.read(chunk_bytes)
+                if not buf:
+                    break
+                buf = rest + buf
+                cut = buf.rfind(b"\n")
+                if cut == -1:
+                    rest = buf
+                    continue
+                rest = buf[cut + 1:]
+                yield _write_chunk(out_dir, zip_path.stem, k, buf[:cut + 1])
+                k += 1
+            if rest.strip():
+                yield _write_chunk(out_dir, zip_path.stem, k, rest + b"\n")
+
+
+def _write_chunk(out_dir: Path, stem: str, k: int, data: bytes) -> tuple[Path, int]:
+    path = out_dir / f"{stem}.{k:04d}.csv"
+    path.write_bytes(data)
+    return path, data.count(b"\n")
+
+
 def _sqlpath(path: Path) -> str:
     """Caminho como literal SQL do DuckDB (barras normais funcionam também no Windows)."""
     return Path(path).resolve().as_posix().replace("'", "''")
@@ -83,7 +120,7 @@ def _read_csv_sql(path: Path, columns: list[str], rejects: str) -> str:
 
 
 def prepare(
-    zips: dict[str, Path],
+    zips: dict[str, Path] | Callable[[str], Path],
     work_dir: Path,
     competence: str,
     ref_date: date,
@@ -92,10 +129,18 @@ def prepare(
     settings_memory: str = "2GB",
     threads: int = 4,
     progress: Callable[[str, int], None] | None = None,
+    release: Callable[[str], None] | None = None,
+    chunk_bytes: int = 128 * 1024 * 1024,
 ) -> PreparedData:
-    """`zips`: nome do arquivo → caminho local. `existing_cnpjs`: CSV com coluna cnpj (pode ser None)."""
+    """Processa os arquivos de uma competência.
+
+    `zips`: dicionário nome → caminho, ou função que entrega (baixando, se preciso) o ZIP pedido.
+    `release`: chamada depois que cada ZIP foi lido (permite apagá-lo e economizar disco).
+    `existing_cnpjs`: CSV com coluna cnpj (pode ser None).
+    """
+    get_zip = zips.__getitem__ if isinstance(zips, dict) else zips
+    release = release or (lambda _name: None)
     work_dir.mkdir(parents=True, exist_ok=True)
-    csv_dir = work_dir / "csv"
     out_dir = work_dir / "out"
     out_dir.mkdir(exist_ok=True)
     result = PreparedData(work_dir=work_dir)
@@ -120,81 +165,52 @@ def prepare(
     if existing_cnpjs and existing_cnpjs.exists() and existing_cnpjs.stat().st_size > 0:
         con.execute(f"INSERT INTO existing SELECT DISTINCT cnpj FROM read_csv('{_sqlpath(existing_cnpjs)}', header=true, columns={{'cnpj':'VARCHAR'}})")
 
+    chunk_dir = work_dir / "chunks"
+
+    def ingest(name: str, table: str, columns: list[str], where: str) -> None:
+        """Lê um ZIP em blocos (sem descompactar inteiro no disco) e grava só as linhas filtradas."""
+        zip_path = get_zip(name)
+        for k, (chunk, lines) in enumerate(iter_zip_chunks(zip_path, chunk_dir, chunk_bytes)):
+            result.records_read += lines
+            rej = f"rej_{table}_{abs(hash(name)) % 10_000}_{k}"
+            con.execute(f"INSERT INTO {table} SELECT * FROM {_read_csv_sql(chunk, columns, rej)} {where}")
+            result.rejected_rows += con.execute(f"SELECT count(*) FROM {rej}").fetchone()[0]
+            con.execute(f"DROP TABLE IF EXISTS {rej}")
+            con.execute(f"DROP TABLE IF EXISTS {rej}_scan")
+            chunk.unlink(missing_ok=True)
+        release(name)
+        if progress:
+            progress(f"{name} processado", 1)
+
     # ---------------- Estabelecimentos ----------------
     est_cols = ", ".join(f'"{c}" VARCHAR' for c in ESTABELECIMENTOS)
     con.execute(f"CREATE TABLE est ({est_cols})")
     cutoff = result.window_from.strftime("%Y%m%d")
     for i, name in enumerate(ESTABELECIMENTOS_FILES):
         step(f"Lendo {name} ({i + 1}/{len(ESTABELECIMENTOS_FILES)})")
-        csv, lines = extract_zip(zips[name], csv_dir)
-        result.records_read += lines
-        if lines == 0:
-            csv.unlink()
-            if progress:
-                progress(f"{name} processado (vazio)", 1)
-            continue
-        con.execute(f"""
-            INSERT INTO est
-            SELECT * FROM {_read_csv_sql(csv, ESTABELECIMENTOS, f'rej_est_{i}')}
+        ingest(name, "est", ESTABELECIMENTOS, f"""
             WHERE (trim(data_inicio_atividade) >= '{cutoff}' AND trim(data_inicio_atividade) ~ '^[0-9]{{8}}$')
-               OR upper(trim(cnpj_basico) || trim(cnpj_ordem) || trim(cnpj_dv)) IN (SELECT cnpj FROM existing)
-        """)
-        result.rejected_rows += con.execute(f"SELECT count(*) FROM rej_est_{i}").fetchone()[0]
-        csv.unlink()
-        if progress:
-            progress(f"{name} processado", 1)
+               OR upper(trim(cnpj_basico) || trim(cnpj_ordem) || trim(cnpj_dv)) IN (SELECT cnpj FROM existing)""")
 
     con.execute("CREATE TABLE basicos AS SELECT DISTINCT upper(trim(cnpj_basico)) AS cnpj_basico FROM est")
+    only_basicos = "WHERE upper(trim(cnpj_basico)) IN (SELECT cnpj_basico FROM basicos)"
 
     # ---------------- Empresas ----------------
-    emp_cols = ", ".join(f'"{c}" VARCHAR' for c in EMPRESAS)
-    con.execute(f"CREATE TABLE emp ({emp_cols})")
+    con.execute(f"CREATE TABLE emp ({', '.join(f'{chr(34)}{c}{chr(34)} VARCHAR' for c in EMPRESAS)})")
     for i, name in enumerate(EMPRESAS_FILES):
         step(f"Lendo {name} ({i + 1}/{len(EMPRESAS_FILES)})")
-        csv, lines = extract_zip(zips[name], csv_dir)
-        result.records_read += lines
-        if lines == 0:
-            csv.unlink()
-            if progress:
-                progress(f"{name} processado (vazio)", 1)
-            continue
-        con.execute(f"""
-            INSERT INTO emp SELECT * FROM {_read_csv_sql(csv, EMPRESAS, f'rej_emp_{i}')}
-            WHERE upper(trim(cnpj_basico)) IN (SELECT cnpj_basico FROM basicos)
-        """)
-        result.rejected_rows += con.execute(f"SELECT count(*) FROM rej_emp_{i}").fetchone()[0]
-        csv.unlink()
-        if progress:
-            progress(f"{name} processado", 1)
+        ingest(name, "emp", EMPRESAS, only_basicos)
 
     # ---------------- Simples / MEI ----------------
-    sim_cols = ", ".join(f'"{c}" VARCHAR' for c in SIMPLES)
-    con.execute(f"CREATE TABLE sim ({sim_cols})")
+    con.execute(f"CREATE TABLE sim ({', '.join(f'{chr(34)}{c}{chr(34)} VARCHAR' for c in SIMPLES)})")
     for name in SIMPLES_FILES:
         step(f"Lendo {name}")
-        csv, lines = extract_zip(zips[name], csv_dir)
-        result.records_read += lines
-        if lines == 0:
-            csv.unlink()
-            if progress:
-                progress(f"{name} processado (vazio)", 1)
-            continue
-        con.execute(f"""
-            INSERT INTO sim SELECT * FROM {_read_csv_sql(csv, SIMPLES, 'rej_sim')}
-            WHERE upper(trim(cnpj_basico)) IN (SELECT cnpj_basico FROM basicos)
-        """)
-        result.rejected_rows += con.execute("SELECT count(*) FROM rej_sim").fetchone()[0]
-        csv.unlink()
-        if progress:
-            progress(f"{name} processado", 1)
+        ingest(name, "sim", SIMPLES, only_basicos)
 
     # ---------------- Tabelas de referência ----------------
     for name, table in [("Cnaes.zip", "ref_cnae"), ("Municipios.zip", "ref_mun"), ("Naturezas.zip", "ref_nat")]:
-        csv, lines = extract_zip(zips[name], csv_dir)
-        con.execute(f"CREATE TABLE {table} AS SELECT * FROM {_read_csv_sql(csv, CODIGO_DESCRICAO, 'rej_' + table)}")
-        csv.unlink()
-        if progress:
-            progress(f"{name} processado", 1)
+        con.execute(f"CREATE TABLE {table} (codigo VARCHAR, descricao VARCHAR)")
+        ingest(name, table, CODIGO_DESCRICAO, "")
 
     # Exporta para Parquet e transforma com Polars
     for t in ["est", "emp", "sim", "ref_cnae", "ref_mun", "ref_nat"]:
@@ -202,7 +218,7 @@ def prepare(
     con.close()
     db_path.unlink(missing_ok=True)
     shutil.rmtree(work_dir / "duck_tmp", ignore_errors=True)
-    shutil.rmtree(csv_dir, ignore_errors=True)
+    shutil.rmtree(chunk_dir, ignore_errors=True)
 
     step("Normalizando e validando registros")
     _transform_with_polars(work_dir, out_dir, competence, result)

@@ -95,7 +95,11 @@ O worker faz o trabalho pesado:
 
 Ele atende os botões da Central de importação e verifica sozinho, a cada 12 horas, se há competência nova.
 
-### Rodar na sua máquina (teste prático)
+### Rodar no Windows (atalhos prontos)
+
+Na pasta `worker/windows/` há arquivos `.bat` numerados: `1-instalar`, `2-verificar-receita`, `3-iniciar-worker`, `4-importar-agora` e `5-iniciar-com-o-windows`. Veja o `LEIA-ME.txt` da pasta.
+
+### Rodar na sua máquina (linha de comando)
 
 ```bash
 cd worker
@@ -159,7 +163,7 @@ O teste ponta a ponta do worker cobre:
 |---|---|
 | Banco + Auth | Supabase Pro (região São Paulo), com backups diários. Ative o PITR se precisar restaurar para um ponto exato. |
 | Frontend | Vercel, Netlify ou Cloudflare Pages (o plano gratuito atende) ou Nginx na mesma VPS. |
-| Worker | VPS Linux com Docker: **4 vCPU, 8 GB RAM e 80 GB SSD** dão folga para os ~7 GB de ZIPs, o maior arquivo descompactado e os temporários do DuckDB. Hostinger, Contabo, DigitalOcean, Hetzner e Magalu Cloud servem. |
+| Worker | VPS Linux com Docker: **4 vCPU, 8 GB RAM e 40 GB SSD**. O worker baixa e processa um ZIP por vez, lendo em blocos (pico de ~3 GB); com mais espaço, guarda os ZIPs até o fim para retomar mais rápido. Hostinger, Contabo, DigitalOcean, Hetzner e Magalu Cloud servem. |
 | Armazenamento (opcional) | Cloudflare R2 com as variáveis `S3_*`: guarda os ZIPs da competência para reprocessar sem baixar de novo. |
 
 O worker só precisa de saída para a internet (Receita e Supabase). Nenhuma porta precisa ficar aberta.

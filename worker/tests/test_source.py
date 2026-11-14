@@ -69,3 +69,19 @@ def test_zip_corrompido_e_rejeitado(tmp_path):
         import zipfile
         with pytest.raises((zipfile.BadZipFile, Exception)):
             extract_zip(tmp_path / "dl" / "Cnaes.zip", tmp_path / "x")
+
+
+def test_leitura_em_blocos_preserva_linhas(tmp_path):
+    import zipfile
+
+    from lead_hunter.transform import iter_zip_chunks
+
+    lines = [f'"{i:08d}";"NOME {i} S\xc3O";"X"\n'.encode("latin-1") for i in range(5000)]
+    z = tmp_path / "Teste.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("TESTE", b"".join(lines)[:-1])  # último registro sem quebra de linha
+    chunks = list(iter_zip_chunks(z, tmp_path / "c", chunk_bytes=4096))
+    assert len(chunks) > 10
+    data = b"".join(p.read_bytes() for p, _ in chunks)
+    assert data == b"".join(lines)
+    assert sum(n for _, n in chunks) == 5000

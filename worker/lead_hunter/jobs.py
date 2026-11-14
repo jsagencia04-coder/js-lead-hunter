@@ -151,23 +151,22 @@ class Worker:
                      status="baixando")
         self._log(job_id, f"Importando competência {competence} (referência {ref:%d/%m/%Y}), {len(files)} arquivos")
 
-        # 2. Download (retomável; arquivos já baixados são reaproveitados)
+        # 2. Espaço em disco: baixa e processa UM arquivo por vez, apagando o ZIP depois de lido
         comp_dir = self.s.data_dir / "zips" / competence
-        local: dict[str, Path] = {}
-        for i, rf in enumerate(sorted(files, key=lambda f: f.size or 0)):
-            restored = self.storage.restore(competence, rf, comp_dir)
-            local[rf.name] = restored or self.source.fetch(competence, rf, comp_dir,
-                                                           progress=lambda m: self._log(job_id, m))
-            if not restored:
-                self.storage.backup(competence, local[rf.name])
-            self._log(job_id, f"Arquivo pronto: {rf.name} ({i + 1}/{len(files)})")
-            self.heartbeat()
-
-        # 3. Processamento
-        self._update(job_id, status="processando")
         work = self.s.data_dir / "work" / competence
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
+        by_name = {f.name: f for f in files}
+        largest = max((f.size or 0) for f in files)
+        need = largest + 2 * 1024 ** 3  # maior ZIP + blocos temporários e base de trabalho
+        free = shutil.disk_usage(work).free
+        if free < need:
+            raise JobFailed(f"Espaço em disco insuficiente em {self.s.data_dir}: livres {free / 1e9:.1f} GB, "
+                            f"necessários ~{need / 1e9:.1f} GB. Libere espaço ou defina DATA_DIR em outro disco.")
+        self._log(job_id, f"Espaço livre: {free / 1e9:.1f} GB (mínimo ~{need / 1e9:.1f} GB)")
+
+        # 3. Processamento
+        self._update(job_id, status="processando")
         with psycopg.connect(self.s.database_url) as c:
             n_existing = export_existing_cnpjs(c, work / "existing.csv")
         self._log(job_id, f"{n_existing} estabelecimentos já na base serão atualizados se mudarem")
@@ -182,8 +181,27 @@ class Worker:
             else:
                 self._log(job_id, msg)
 
-        data = prepare(local, work, competence, ref, self.s.lead_window_days, work / "existing.csv",
-                       self.s.duckdb_memory, self.s.duckdb_threads, progress)
+        def get_zip(name: str) -> Path:
+            rf = by_name[name]
+            self._update(job_id, status="baixando")
+            path = self.storage.restore(competence, rf, comp_dir)
+            if not path:
+                path = self.source.fetch(competence, rf, comp_dir, progress=lambda m: self._log(job_id, m))
+                self.storage.backup(competence, path)
+            self._update(job_id, status="processando")
+            self.heartbeat()
+            return path
+
+        total = sum(f.size or 0 for f in files)
+        # se sobrar espaço, mantém os ZIPs até o fim (uma nova tentativa não precisa baixar de novo)
+        keep_until_end = self.s.keep_local_zips or free > total + 10 * 1024 ** 3
+
+        def release(name: str) -> None:
+            if not keep_until_end:
+                (comp_dir / name).unlink(missing_ok=True)
+
+        data = prepare(get_zip, work, competence, ref, self.s.lead_window_days, work / "existing.csv",
+                       self.s.duckdb_memory, self.s.duckdb_threads, progress, release)
         self._update(job_id, records_read=data.records_read, files_processed=len(files),
                      error_count=data.rejected_rows)
         self._log(job_id, f"{data.records_read} linhas lidas; {data.establishments} estabelecimentos selecionados; "
