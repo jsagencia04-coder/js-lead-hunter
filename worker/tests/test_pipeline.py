@@ -47,8 +47,10 @@ def test_importacao_completa(fresh_db, tmp_path):
 
     leads = {r["cnpj"]: r for r in q(fresh_db, "select * from lead_list_v")}
     # só matrizes ativas, válidas, na janela e sem bloqueio
-    assert {c[:8] for c in leads} == {"11222333", "12ABC345", "66777888"}
-    assert job["new_leads"] == 3
+    assert {c[:8] for c in leads} == {"11222333", "12ABC345", "66777888", "88999000"}
+    assert job["new_leads"] == 4
+    cafe = next(r for r in leads.values() if r["cnpj_basico"] == "88999000")
+    assert cafe["nome_fantasia"] == "CAFE\nDA ESQUINA"  # quebra de linha dentro de aspas
 
     padaria = next(r for r in leads.values() if r["cnpj_basico"] == "11222333")
     assert padaria["nome_fantasia"] == "PADARIA SÃO JOÃO"  # Latin-1 preservado
@@ -71,7 +73,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '22333444'")
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '55666777'")
     # recomendações geradas e auditoria sem poluição
-    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 9
+    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 12
     assert q(fresh_db, "select count(*) n from audit_logs where table_name in ('leads','establishments')")[0]["n"] == 0
     # UF do município derivada dos estabelecimentos
     assert q(fresh_db, "select uf from municipalities where code = '6001'")[0]["uf"] == "RJ"
@@ -199,7 +201,7 @@ def test_once_importa_e_respeita_tempo(fresh_db, tmp_path):
         w.once()  # sem nada pendente: verifica, encontra competência nova e importa
     cur = q(fresh_db, "select competence, status from import_jobs where is_current")
     assert cur and cur[0]["competence"] == "2026-10"
-    assert q(fresh_db, "select count(*) n from leads")[0]["n"] == 4  # sem bloqueio cadastrado neste teste
+    assert q(fresh_db, "select count(*) n from leads")[0]["n"] == 5  # sem bloqueio cadastrado neste teste
 
     # tempo esgotado no meio do download: job volta para 'pendente'
     build_competence(root, "2026-11")

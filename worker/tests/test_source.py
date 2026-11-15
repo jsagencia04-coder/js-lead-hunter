@@ -98,3 +98,23 @@ def test_conversao_para_utf8():
     assert to_utf8(b"A\x81B").decode() == "A\x81B"
     # já em UTF-8: inalterado
     assert to_utf8("Ação".encode()) == "Ação".encode()
+
+
+def test_corte_de_bloco_respeita_quebra_de_linha_entre_aspas(tmp_path):
+    import zipfile
+
+    from lead_hunter.transform import iter_zip_chunks
+
+    recs = []
+    for i in range(3000):
+        comp = "SALA 1\nFUNDOS" if i % 7 == 0 else "SALA 1"
+        recs.append(f'"{i:08d}";"{comp}";"X"\n'.encode("latin-1"))
+    z = tmp_path / "Q.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("Q", b"".join(recs))
+    chunks = list(iter_zip_chunks(z, tmp_path / "c", chunk_bytes=997))
+    assert len(chunks) > 20
+    for p, _ in chunks:
+        data = p.read_bytes()
+        assert data.count(b'"') % 2 == 0, "bloco cortou um registro no meio"
+    assert b"".join(p.read_bytes() for p, _ in chunks) == b"".join(recs)

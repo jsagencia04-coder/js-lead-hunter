@@ -61,6 +61,8 @@ def build_competence(root: Path, competence: str, *, extra_est: list[bytes] | No
         est_row("55666777", dv="00"),
         # linha com campo contendo ponto e vírgula entre aspas
         est_row("66777888", fantasia="LOJA A; B", uf="RJ", mun="6001"),
+        # campo com quebra de linha entre aspas (ocorre nos arquivos reais)
+        est_row("88999000", fantasia="CAFE\nDA ESQUINA", uf="MG", mun="4123"),
     ] + (extra_est or [])
     files: dict[str, bytes] = {
         "Estabelecimentos0.zip": b"".join(est0),

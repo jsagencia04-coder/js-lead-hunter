@@ -87,7 +87,7 @@ def iter_zip_chunks(zip_path: Path, out_dir: Path, chunk_bytes: int = 128 * 1024
                 if not buf:
                     break
                 buf = rest + buf
-                cut = buf.rfind(b"\n")
+                cut = _safe_cut(buf)
                 if cut == -1:
                     rest = buf
                     continue
@@ -96,6 +96,24 @@ def iter_zip_chunks(zip_path: Path, out_dir: Path, chunk_bytes: int = 128 * 1024
                 k += 1
             if rest.strip():
                 yield _write_chunk(out_dir, zip_path.stem, k, rest + b"\n")
+
+
+def _safe_cut(buf: bytes, max_tries: int = 1000) -> int:
+    """Posição da última quebra de linha que fecha um registro (fora de aspas).
+
+    A Receita coloca todos os campos entre aspas e alguns campos contêm quebras
+    de linha. Um corte é seguro quando o número de aspas antes dele é par.
+    """
+    total = buf.count(b'"')
+    pos = len(buf)
+    for _ in range(max_tries):
+        nl = buf.rfind(b"\n", 0, pos)
+        if nl == -1:
+            return -1
+        if (total - buf.count(b'"', nl)) % 2 == 0:
+            return nl
+        pos = nl
+    return -1
 
 
 def to_utf8(data: bytes) -> bytes:
@@ -134,7 +152,7 @@ def _read_csv_sql(path: Path, columns: list[str], rejects: str) -> str:
     return (
         f"read_csv('{p}', auto_detect=false, header=false, delim=';', quote='\"', escape='\"', encoding='utf-8', "
         f"columns={{{cols}}}, null_padding=true, store_rejects=true, rejects_table='{rejects}', "
-        f"rejects_scan='{rejects}_scan', parallel=true)"
+        f"rejects_scan='{rejects}_scan', parallel=false)"
     )
 
 
