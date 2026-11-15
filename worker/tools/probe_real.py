@@ -48,9 +48,11 @@ def main() -> int:
         f = tmp / (name + ".csv")
         f.write_bytes(utf)
         try:
-            rows = con.execute(f"SELECT count(*) FROM {_read_csv_sql(f, cols, 'rej_' + name.split('.')[0])}").fetchone()[0]
-            rej = con.execute(f"SELECT count(*) FROM rej_{name.split('.')[0]}").fetchone()[0]
-            first = con.execute(f"SELECT * FROM {_read_csv_sql(f, cols, 'rej2_' + name.split('.')[0])} LIMIT 1").fetchone()
+            t = name.split('.')[0].lower()
+            con.execute(f"CREATE TABLE s_{t} AS SELECT * FROM {_read_csv_sql(f, cols, 'rej_' + t)}")
+            rows = con.execute(f"SELECT count(*) FROM s_{t}").fetchone()[0]
+            rej = con.execute(f"SELECT count(*) FROM rej_{t}").fetchone()[0]
+            first = con.execute(f"SELECT * FROM s_{t} LIMIT 1").fetchone()
             nlines = raw.count(b"\n")
             print(f"{name}: {nlines} linhas na amostra, {rows} lidas, {rej} rejeitadas")
             print("   1ª linha:", [str(v)[:25] for v in first][:12])
