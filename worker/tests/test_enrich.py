@@ -29,6 +29,11 @@ def test_check_domain_classifica():
     assert check_domain("a.com.br", _client(real)).status == "site_ok"
     assert check_domain("a.com.br", _client(parked)).status == "site_fraco"
     assert check_domain("a.com.br", _client(down)).status == "sem_site"
+    # bloqueio de robôs e erro de servidor não provam ausência de site
+    assert check_domain("a.com.br", _client(lambda r: httpx.Response(403))).status == "inconclusivo"
+    assert check_domain("a.com.br", _client(lambda r: httpx.Response(500))).status == "inconclusivo"
+    # hospedagem sem página publicada
+    assert check_domain("a.com.br", _client(lambda r: httpx.Response(404))).status == "site_fraco"
 
 
 def test_enriquecimento_pontua_oportunidade_digital(fresh_db, tmp_path):

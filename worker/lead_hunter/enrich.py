@@ -6,6 +6,7 @@ Só conta como "oportunidade digital" o que foi efetivamente verificado:
 - domínio próprio sem site respondendo              → sem_site    (pontua)
 - domínio próprio com página vazia/estacionada      → site_fraco  (pontua)
 - domínio próprio com site no ar                    → site_ok     (preenche "site")
+- servidor recusou o acesso (403/429/5xx)           → inconclusivo (não pontua; nova tentativa em 7 dias)
 
 Acessa apenas a página inicial pública do domínio da própria empresa.
 """
@@ -57,7 +58,12 @@ def domain_of(email: str | None) -> str | None:
 
 
 def check_domain(domain: str, client: httpx.Client) -> CheckResult:
-    """Tenta https://dominio, https://www.dominio e http://dominio."""
+    """Tenta https://dominio, https://www.dominio e http://dominio.
+
+    Bloqueio de robôs (403, 429) e erros do servidor (5xx) não provam ausência
+    de site: o resultado é "inconclusivo" e não pontua.
+    """
+    statuses: list[int] = []
     last_error = None
     for url in (f"https://{domain}", f"https://www.{domain}", f"http://{domain}"):
         try:
@@ -66,14 +72,19 @@ def check_domain(domain: str, client: httpx.Client) -> CheckResult:
             last_error = type(exc).__name__
             continue
         if r.status_code >= 400:
-            last_error = f"HTTP {r.status_code}"
+            statuses.append(r.status_code)
             continue
         body = r.text[:20000] if "html" in r.headers.get("content-type", "html") else ""
         text = re.sub(r"<[^>]+>", " ", body)
         if len(text.strip()) < 200 or PARKED_MARKERS.search(body):
             return CheckResult("site_fraco", r.status_code, str(r.url), "página vazia, padrão ou estacionada")
         return CheckResult("site_ok", r.status_code, str(r.url))
-    return CheckResult("sem_site", None, None, last_error)
+    if any(code in (401, 403, 429) or code >= 500 for code in statuses):
+        return CheckResult("inconclusivo", max(statuses), None, "servidor recusou ou falhou: " +
+                           ",".join(str(c) for c in sorted(set(statuses))))
+    if statuses:  # só 404/410 etc.: há hospedagem, mas nenhuma página publicada
+        return CheckResult("site_fraco", statuses[-1], None, "domínio sem página publicada")
+    return CheckResult("sem_site", None, None, last_error or "sem resposta")
 
 
 class Enricher:
@@ -95,14 +106,16 @@ class Enricher:
 
     def run(self, deadline: float | None = None) -> dict:
         stats = {"verificados": 0, "sem_dominio_proprio": 0, "dominio_compartilhado": 0,
-                 "sem_site": 0, "site_fraco": 0, "site_ok": 0}
+                 "sem_site": 0, "site_fraco": 0, "site_ok": 0, "inconclusivo": 0}
         with psycopg.connect(self.database_url, autocommit=True) as c:
             rows = c.execute("""
                 select l.id, lower(trim(e.email))
                   from public.leads l
                   join public.establishments e on e.cnpj = l.cnpj
                  where e.email is not null
-                   and (l.digital_presence ->> 'checked_at') is null
+                   and ((l.digital_presence ->> 'checked_at') is null
+                        or (l.digital_presence ->> 'status' = 'inconclusivo'
+                            and (l.digital_presence ->> 'checked_at')::timestamptz < now() - interval '7 days'))
                    and l.stage not in ('convertido', 'perdido')
                  order by l.score desc, l.created_at desc
                  limit %s""", (self.batch,)).fetchall()
