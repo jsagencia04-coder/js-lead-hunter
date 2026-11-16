@@ -24,6 +24,7 @@ MARKERS = {
     "20261116000006": "select exists (select 1 from public.cnae_service_rules where cnae_prefix = '9602')",
     "20261116000007": "select false",
     "20261116000008": "select false",
+    "20261116000009": "select exists (select 1 from public.scoring_rules where key = 'cnae_compativel' and points = 35)",
 }
 
 

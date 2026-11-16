@@ -76,11 +76,11 @@ select rebuild_lead_recommendations(p_import_job_id => 'aaaaaaaa-0000-0000-0000-
 select set_config('app.bulk_load', '', false);
 reset role;
 
--- varejo (CNAE 47): recência 25 + telefone 15 + e-mail 15 + porte 6 + CNAE 80% de 20 = 77
-select pg_temp.assert((select score = 77 from leads where cnpj_basico = '11222333'), 'pontuação calculada (77)');
-select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta');
--- publicidade (CNAE 73), 60 dias: recência 13 + e-mail 15 + porte 8 + CNAE 85% de 20 = 53
-select pg_temp.assert((select score = 53 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (53)');
+-- varejo (CNAE 47): recência 15 + telefone 5 + e-mail 5 + porte 6 + CNAE 80% de 35 = 59
+select pg_temp.assert((select score = 59 from leads where cnpj_basico = '11222333'), 'pontuação calculada (59)');
+select pg_temp.assert((select priority = 'media' from leads where cnpj_basico = '11222333'), 'prioridade média sem oportunidade digital');
+-- publicidade (CNAE 73), 60 dias: recência 8 + e-mail 5 + porte 8 + CNAE 85% de 35 = 51
+select pg_temp.assert((select score = 51 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (51)');
 select pg_temp.assert((select count(*) = 8 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
 select pg_temp.assert((select count(*) = 0 from audit_logs where table_name = 'leads'), 'carga em massa não gera auditoria linha a linha');
 select pg_temp.assert((select count(*) = 2 from lead_events where event_type = 'criado'), 'histórico registra criação');
@@ -91,8 +91,11 @@ select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111
 update cnae_service_rules set relevance = 100
  where cnae_prefix = '47' and service_id = (select id from service_catalog where code = 'site_institucional');
 select admin_recalculate_leads();
-select pg_temp.assert((select score = 81 from leads where cnpj_basico = '11222333'), 'regra editada pelo admin muda a pontuação (81)');
-select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta após regra');
+select pg_temp.assert((select score = 66 from leads where cnpj_basico = '11222333'), 'regra editada pelo admin muda a pontuação (66)');
+update leads set digital_presence = '{"status": "sem_site"}' where cnpj_basico = '11222333';
+select admin_recalculate_leads();
+select pg_temp.assert((select score = 96 from leads where cnpj_basico = '11222333'), 'oportunidade digital verificada soma 30 (96)');
+select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta com oportunidade digital');
 select pg_temp.assert(
   (select relevance = 100 from lead_recommendations lr join service_catalog s on s.id = lr.service_id
     join leads l on l.id = lr.lead_id where s.code = 'site_institucional' and l.cnpj_basico = '11222333'),

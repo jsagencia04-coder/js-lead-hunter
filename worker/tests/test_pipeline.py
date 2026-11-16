@@ -59,7 +59,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert padaria["has_phone"] and padaria["opcao_simples"] is True
     assert float(padaria["capital_social"]) == 10000.0
     assert padaria["municipio"] == "SAO PAULO" and padaria["uf"] == "SP"
-    assert padaria["score"] == 77  # recência 25 + tel 15 + e-mail 15 + porte micro 6 + CNAE varejo 16
+    assert padaria["score"] == 59  # recência 15 + tel 5 + e-mail 5 + porte micro 6 + CNAE varejo 28
 
     alfa = next(r for r in leads.values() if r["cnpj_basico"] == "12ABC345")
     assert alfa["cnpj"] == "12ABC34501DE35"
@@ -163,7 +163,7 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
     assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 8
+    assert len(q(fresh_db, "select * from app_migrations")) == 9
     assert migrate(fresh_db) == []
 
 
@@ -188,7 +188,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 8
+        assert len(migrate(url)) == 9
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:
