@@ -40,6 +40,8 @@ PARKED_MARKERS = re.compile(
     r"hostgator|em constru[cç][aã]o|under construction|coming soon|index of /|default web site page|"
     r"it works!|welcome to nginx|apache2 ubuntu default", re.I)
 SHARED_DOMAIN_MIN_COMPANIES = 3
+# Escritórios de contabilidade costumam cadastrar o próprio e-mail ao abrir o CNPJ do cliente
+ACCOUNTANT_DOMAIN = re.compile(r"contab|contador|contabil|escritorio|assessoriacont", re.I)
 
 
 @dataclass
@@ -109,7 +111,7 @@ class Enricher:
                  "sem_site": 0, "site_fraco": 0, "site_ok": 0, "inconclusivo": 0}
         with psycopg.connect(self.database_url, autocommit=True) as c:
             rows = c.execute("""
-                select l.id, lower(trim(e.email))
+                select l.id, lower(trim(e.email)), coalesce(e.cnae_principal, '')
                   from public.leads l
                   join public.establishments e on e.cnpj = l.cnpj
                  where e.email is not null
@@ -131,10 +133,14 @@ class Enricher:
         now = datetime.now(timezone.utc).isoformat()
         updates: dict[str, tuple[dict, str | None]] = {}
         to_check: dict[str, list[str]] = {}
-        for lead_id, email in rows:
+        for lead_id, email, cnae in rows:
             dom = domain_of(email)
             if not dom or dom in GENERIC_DOMAINS:
                 updates[str(lead_id)] = ({"status": "sem_dominio_proprio", "dominio": dom, "checked_at": now,
+                                          "fonte": "email_cadastral"}, None)
+            elif ACCOUNTANT_DOMAIN.search(dom) and not cnae.startswith("6920"):
+                updates[str(lead_id)] = ({"status": "dominio_compartilhado", "dominio": dom, "checked_at": now,
+                                          "motivo": "domínio de escritório de contabilidade",
                                           "fonte": "email_cadastral"}, None)
             elif dom in shared:
                 updates[str(lead_id)] = ({"status": "dominio_compartilhado", "dominio": dom, "checked_at": now,

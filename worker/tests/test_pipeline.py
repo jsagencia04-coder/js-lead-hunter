@@ -162,8 +162,8 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     # o banco de teste já tem as migrations aplicadas "à mão" (sem controle)
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
-    assert first == ["20261116000007_digital_presence_fix.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 7
+    assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
+    assert len(q(fresh_db, "select * from app_migrations")) == 8
     assert migrate(fresh_db) == []
 
 
@@ -188,7 +188,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 7
+        assert len(migrate(url)) == 8
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:

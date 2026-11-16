@@ -59,3 +59,19 @@ def test_enriquecimento_pontua_oportunidade_digital(fresh_db, tmp_path):
     assert Enricher(fresh_db, checker=checker).run()["verificados"] == 0
     # não gera evento de pontuação por lead (carga em massa)
     assert not q(fresh_db, "select 1 from lead_events where event_type = 'pontuacao_alterada'")
+
+
+def test_dominio_de_contador_nao_conta_como_site_da_empresa(fresh_db, tmp_path):
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        run_import(make_worker(fresh_db, rf.url, tmp_path))
+    q(fresh_db, "update establishments set email = 'abertura@silvacontabilidade.com.br' where cnpj_basico = '11222333' returning 1")
+
+    def checker(dom):
+        assert "contab" not in dom, "não deveria acessar o site do contador"
+        return CheckResult("site_ok", 200, f"https://{dom}/")
+
+    Enricher(fresh_db, checker=checker).run()
+    dp = q(fresh_db, "select digital_presence from leads where cnpj_basico = '11222333'")[0]["digital_presence"]
+    assert dp["status"] == "dominio_compartilhado"

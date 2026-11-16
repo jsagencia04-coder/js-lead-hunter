@@ -23,6 +23,7 @@ MARKERS = {
     "20261114000005": "select to_regprocedure('public.current_reference_date()') is not null",
     "20261116000006": "select exists (select 1 from public.cnae_service_rules where cnae_prefix = '9602')",
     "20261116000007": "select false",
+    "20261116000008": "select false",
 }
 
 
