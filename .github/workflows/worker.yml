@@ -32,6 +32,7 @@ jobs:
       DUCKDB_MEMORY: 8GB
       DUCKDB_THREADS: "4"
       CHECK_INTERVAL_HOURS: "6"
+      ENRICH_BATCH: "10000"
     steps:
       - name: Verifica configuração
         id: cfg

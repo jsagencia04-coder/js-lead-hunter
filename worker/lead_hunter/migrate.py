@@ -21,6 +21,7 @@ MARKERS = {
     "20261114000003": "select exists (select 1 from public.service_catalog)",
     "20261114000004": "select to_regprocedure('public.cnpj_is_valid(text)') is not null",
     "20261114000005": "select to_regprocedure('public.current_reference_date()') is not null",
+    "20261116000006": "select exists (select 1 from public.cnae_service_rules where cnae_prefix = '9602')",
 }
 
 

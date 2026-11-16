@@ -10,7 +10,8 @@ from .fake_rf import TOKEN, FakeRF, build_competence, est_row
 
 def make_worker(db, url, tmp_path):
     s = Settings(database_url=db, rf_base_url=url, rf_share_token=TOKEN, data_dir=tmp_path / "data",
-                 chunk_mb=1, lead_window_days=90, duckdb_memory="512MB", duckdb_threads=2)
+                 chunk_mb=1, lead_window_days=90, duckdb_memory="512MB", duckdb_threads=2,
+                 enrich_enabled=False)
     return Worker(s)
 
 
@@ -58,7 +59,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert padaria["has_phone"] and padaria["opcao_simples"] is True
     assert float(padaria["capital_social"]) == 10000.0
     assert padaria["municipio"] == "SAO PAULO" and padaria["uf"] == "SP"
-    assert padaria["score"] == 61  # recência 25 + tel 15 + e-mail 15 + porte micro 6
+    assert padaria["score"] == 77  # recência 25 + tel 15 + e-mail 15 + porte micro 6 + CNAE varejo 16
 
     alfa = next(r for r in leads.values() if r["cnpj_basico"] == "12ABC345")
     assert alfa["cnpj"] == "12ABC34501DE35"
@@ -73,7 +74,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '22333444'")
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '55666777'")
     # recomendações geradas e auditoria sem poluição
-    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 12
+    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 14
     assert q(fresh_db, "select count(*) n from audit_logs where table_name in ('leads','establishments')")[0]["n"] == 0
     # UF do município derivada dos estabelecimentos
     assert q(fresh_db, "select uf from municipalities where code = '6001'")[0]["uf"] == "RJ"
@@ -161,7 +162,7 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     # o banco de teste já tem as migrations aplicadas "à mão" (sem controle)
     first = migrate(fresh_db)
     assert first == []  # todas reconhecidas pelos marcadores
-    assert len(q(fresh_db, "select * from app_migrations")) == 5
+    assert len(q(fresh_db, "select * from app_migrations")) == 6
     assert migrate(fresh_db) == []
 
 
@@ -186,7 +187,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 5
+        assert len(migrate(url)) == 6
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:

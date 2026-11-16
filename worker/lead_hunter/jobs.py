@@ -295,7 +295,28 @@ class Worker:
             if self.deadline and time.monotonic() > self.deadline:
                 break
             job = self.claim()
+        self.enrich()
         self.heartbeat()
+
+    def enrich(self) -> None:
+        """Verifica a presença digital de um lote de leads (usa o tempo que sobrar da rodada)."""
+        if not self.s.enrich_enabled:
+            return
+        from .enrich import Enricher
+
+        try:
+            stats = Enricher(self.s.database_url, batch=self.s.enrich_batch).run(deadline=self.deadline)
+        except Exception:  # noqa: BLE001 — o enriquecimento nunca derruba o worker
+            log.exception("Falha no enriquecimento de presença digital")
+            self.state.execute(
+                "UPDATE public.integration_status SET status = 'erro', updated_at = now() WHERE key = 'enriquecimento'")
+            return
+        log.info("Presença digital: %s", stats)
+        self.state.execute(
+            """UPDATE public.integration_status
+                  SET status = 'ativo', last_seen_at = now(), updated_at = now(),
+                      details = details || jsonb_build_object('ultima_rodada', %s::jsonb, 'fonte', 'domínio do e-mail cadastral')
+                WHERE key = 'enriquecimento'""", (json.dumps(stats),))
 
     def scheduled_check(self):
         """Verificação automática: se houver competência nova, enfileira a importação."""

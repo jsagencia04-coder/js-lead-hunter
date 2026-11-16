@@ -66,6 +66,8 @@ class Settings:
     max_runtime_minutes: int = 0       # 0 = sem limite (modo contínuo)
     worker_mode: str = "continuo"      # "continuo" (servidor/PC) ou "agendado" (GitHub Actions)
     worker_interval_min: int = 0       # intervalo entre execuções no modo agendado
+    enrich_enabled: bool = True        # verificação de presença digital dos leads
+    enrich_batch: int = 3000           # leads verificados por rodada
 
     @property
     def s3_enabled(self) -> bool:
@@ -103,4 +105,6 @@ class Settings:
             max_runtime_minutes=_int("MAX_RUNTIME_MINUTES", 0),
             worker_mode=os.getenv("WORKER_MODE", "continuo"),
             worker_interval_min=_int("WORKER_INTERVAL_MIN", 0),
+            enrich_enabled=_bool("ENRICH_ENABLED", True),
+            enrich_batch=_int("ENRICH_BATCH", 3000),
         )

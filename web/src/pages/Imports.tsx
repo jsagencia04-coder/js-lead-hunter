@@ -30,7 +30,9 @@ const INTEGRATION: Record<IntegrationStatus['status'], { label: string; variant:
 
 // Worker contínuo: sinal a cada poucos segundos (tolerância 10 min).
 // Worker agendado (GitHub Actions): sinal a cada execução (tolerância 1,5x o intervalo).
+// O agendador gratuito do GitHub atrasa execuções por horas; tolera até 26 h.
 function heartbeatToleranceMs(details: IntegrationStatus['details'] | undefined) {
+  if (details?.modo === 'agendado') return 26 * 60 * 60 * 1000
   const interval = Number(details?.intervalo_min ?? 0)
   return Math.max(10, interval * 1.5) * 60 * 1000
 }
@@ -84,7 +86,7 @@ export default function Imports() {
     else setNotice(
       workerOnline
         ? (worker?.details?.modo === 'agendado'
-            ? `Solicitação registrada. O worker roda a cada ${worker.details.intervalo_min} min e vai processá-la na próxima execução.`
+            ? 'Solicitação registrada. O worker roda de forma agendada no GitHub (normalmente a cada poucas horas) e vai processá-la na próxima execução.'
             : 'Solicitação registrada. O worker irá processá-la no próximo ciclo.')
         : 'Solicitação registrada, mas o worker não está conectado. Ela ficará aguardando até o worker ser ativado.',
     )

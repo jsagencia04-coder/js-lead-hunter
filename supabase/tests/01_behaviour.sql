@@ -76,22 +76,22 @@ select rebuild_lead_recommendations(p_import_job_id => 'aaaaaaaa-0000-0000-0000-
 select set_config('app.bulk_load', '', false);
 reset role;
 
--- pontos: recência 25 + telefone 15 + e-mail 15 + porte 6 = 61 (sem regra específica de CNAE)
-select pg_temp.assert((select score = 61 from leads where cnpj_basico = '11222333'), 'pontuação calculada (61)');
-select pg_temp.assert((select priority = 'media' from leads where cnpj_basico = '11222333'), 'prioridade média');
--- alfanumérico: 60 dias → metade da recência (13) + e-mail 15 + porte 8 = 36
-select pg_temp.assert((select score = 36 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (36)');
-select pg_temp.assert((select count(*) = 6 from lead_recommendations), '3 recomendações gerais por lead');
+-- varejo (CNAE 47): recência 25 + telefone 15 + e-mail 15 + porte 6 + CNAE 80% de 20 = 77
+select pg_temp.assert((select score = 77 from leads where cnpj_basico = '11222333'), 'pontuação calculada (77)');
+select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta');
+-- publicidade (CNAE 73), 60 dias: recência 13 + e-mail 15 + porte 8 + CNAE 85% de 20 = 53
+select pg_temp.assert((select score = 53 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (53)');
+select pg_temp.assert((select count(*) = 8 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
 select pg_temp.assert((select count(*) = 0 from audit_logs where table_name = 'leads'), 'carga em massa não gera auditoria linha a linha');
 select pg_temp.assert((select count(*) = 2 from lead_events where event_type = 'criado'), 'histórico registra criação');
 
 -- Regra específica de CNAE muda pontuação após recálculo
 set role authenticated;
 select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
-insert into cnae_service_rules (cnae_prefix, service_id, relevance, reason)
-select '47', id, 100, 'Varejo precisa de presença digital' from service_catalog where code = 'site_institucional';
+update cnae_service_rules set relevance = 100
+ where cnae_prefix = '47' and service_id = (select id from service_catalog where code = 'site_institucional');
 select admin_recalculate_leads();
-select pg_temp.assert((select score = 81 from leads where cnpj_basico = '11222333'), 'regra de CNAE soma 20 pontos (81)');
+select pg_temp.assert((select score = 81 from leads where cnpj_basico = '11222333'), 'regra editada pelo admin muda a pontuação (81)');
 select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta após regra');
 select pg_temp.assert(
   (select relevance = 100 from lead_recommendations lr join service_catalog s on s.id = lr.service_id

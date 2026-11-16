@@ -20,6 +20,7 @@ interface LeadDetail extends LeadRow {
 }
 interface LeadExtra {
   score_breakdown: Record<string, number>
+  digital_presence: { status?: string; dominio?: string; checked_at?: string; url?: string } | null
   lost_reason: string | null
   converted_at: string | null
 }
@@ -44,6 +45,13 @@ const EVENT_LABEL: Record<string, string> = {
 const SCORE_LABEL: Record<string, string> = {
   recencia: 'Recência', telefone: 'Telefone', email: 'E-mail', cnae_compativel: 'CNAE compatível',
   porte: 'Porte', oportunidade_digital: 'Oportunidade digital',
+}
+const DIGITAL: Record<string, string> = {
+  sem_site: 'Domínio próprio sem site no ar (oportunidade)',
+  site_fraco: 'Site vazio ou estacionado (oportunidade)',
+  site_ok: 'Site no ar',
+  sem_dominio_proprio: 'Usa e-mail genérico (sem domínio próprio)',
+  dominio_compartilhado: 'E-mail de terceiro (ex.: contador)',
 }
 const SITUACAO: Record<string, string> = { '01': 'Nula', '02': 'Ativa', '03': 'Suspensa', '04': 'Inapta', '08': 'Baixada' }
 
@@ -73,7 +81,7 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
     setError(null)
     const [l, x, r, e, p] = await Promise.all([
       supabase.from('lead_list_v').select('*').eq('id', leadId).single(),
-      supabase.from('leads').select('score_breakdown,lost_reason,converted_at').eq('id', leadId).single(),
+      supabase.from('leads').select('score_breakdown,digital_presence,lost_reason,converted_at').eq('id', leadId).single(),
       supabase.from('lead_recommendations').select('relevance,reason,service_catalog(name)').eq('lead_id', leadId).order('relevance', { ascending: false }),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       supabase.from('profiles').select('id,full_name,email').eq('active', true).order('full_name'),
@@ -195,6 +203,8 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
                 <Item k="CNAEs secundários" v={lead.cnaes_secundarios?.length ? lead.cnaes_secundarios.join(', ') : '—'} />
                 <Item k="Telefone" v={phone ?? 'não informado'} />
                 <Item k="E-mail" v={lead.email ?? 'não informado'} />
+                <Item k="Presença digital" v={DIGITAL[extra?.digital_presence?.status ?? ''] ?? 'ainda não verificada'} />
+                <Item k="Site" v={lead.website ?? '—'} />
               </dl>
               <p className="mt-3 text-xs text-muted-foreground">
                 Situação cadastral ativa não comprova regularidade fiscal. Dados da base pública do CNPJ (Receita Federal).
