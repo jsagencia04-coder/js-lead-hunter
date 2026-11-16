@@ -239,6 +239,21 @@ class Worker:
             raise JobFailed("Validação reprovou a competência: " + "; ".join(problems) +
                             ". A importação vigente foi mantida.")
 
+        # Espaço no banco: estimativa conservadora de ~4 KB por estabelecimento novo
+        # (estabelecimento + empresa + lead + histórico + recomendações + índices)
+        if self.s.db_size_limit_mb:
+            current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
+            projected = current + data.establishments * 4096
+            limit = self.s.db_size_limit_mb * 1024 * 1024 * 0.95
+            self._log(job_id, f"Banco: {current / 1e6:.0f} MB; previsto após a carga: {projected / 1e6:.0f} MB "
+                              f"(limite {self.s.db_size_limit_mb} MB)")
+            if projected > limit:
+                raise JobFailed(
+                    f"Espaço insuficiente no banco: {current / 1e6:.0f} MB usados e a carga exigiria cerca de "
+                    f"{projected / 1e6:.0f} MB (limite do plano: {self.s.db_size_limit_mb} MB). Nada foi gravado. "
+                    "Opções: contratar o plano Pro do Supabase (e ajustar DB_SIZE_LIMIT_MB), reduzir "
+                    "LEAD_WINDOW_DAYS ou arquivar leads antigos.")
+
         # 5. Carga atômica
         self._log(job_id, "Gravando no banco (transação única)")
         with psycopg.connect(self.s.database_url, application_name="js-lead-hunter-load") as c:

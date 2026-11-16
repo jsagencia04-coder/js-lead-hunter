@@ -33,6 +33,7 @@ jobs:
       DUCKDB_THREADS: "4"
       CHECK_INTERVAL_HOURS: "6"
       ENRICH_BATCH: "10000"
+      DB_SIZE_LIMIT_MB: ${{ vars.DB_SIZE_LIMIT_MB || '500' }}
     steps:
       - name: Verifica configuração
         id: cfg

@@ -68,6 +68,7 @@ class Settings:
     worker_interval_min: int = 0       # intervalo entre execuções no modo agendado
     enrich_enabled: bool = True        # verificação de presença digital dos leads
     enrich_batch: int = 3000           # leads verificados por rodada
+    db_size_limit_mb: int = 0          # limite do plano do banco (0 = sem trava); Supabase gratuito: 500
 
     @property
     def s3_enabled(self) -> bool:
@@ -107,4 +108,5 @@ class Settings:
             worker_interval_min=_int("WORKER_INTERVAL_MIN", 0),
             enrich_enabled=_bool("ENRICH_ENABLED", True),
             enrich_batch=_int("ENRICH_BATCH", 3000),
+            db_size_limit_mb=_int("DB_SIZE_LIMIT_MB", 0),
         )

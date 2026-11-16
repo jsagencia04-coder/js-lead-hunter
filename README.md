@@ -38,6 +38,36 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 - **Central de importação:** competência vigente, estado do worker e das integrações, histórico de execuções (arquivos, registros lidos, novos leads, atualizações, erros, duração) com log detalhado, e botões para verificar nova competência e iniciar importação.
 - **Administração:** usuários e perfis (admin, gestor, comercial, leitura), convites, oposição ao contato, serviços, pesos de pontuação, regras por CNAE e auditoria.
 
+## Pontuação e presença digital
+
+**Pesos padrão.** Foram recalibrados com os dados reais: telefone, e-mail e recência estão presentes em ~100% das empresas novas e quase não diferenciam leads. Todos os pesos são editáveis em *Administração → Serviços e pontuação*.
+
+| Critério | Pontos |
+|---|---|
+| Compatibilidade do CNAE com os serviços da JS Designer | 35 |
+| Oportunidade digital **verificada** | 30 |
+| Recência da abertura | 15 |
+| Porte | 10 |
+| Telefone | 5 |
+| E-mail | 5 |
+
+**Regras por CNAE.** Há 70 regras iniciais por divisão ou subclasse (varejo, alimentação, saúde, construção, serviços profissionais etc.). Elas definem tanto a compatibilidade quanto os serviços recomendados e também são editáveis.
+
+**Presença digital.** O worker verifica o domínio do e-mail cadastral de cada lead:
+
+- **Não pontuam:**
+  - e-mail genérico (Gmail, Hotmail etc.);
+  - domínio usado por várias empresas ou de escritório de contabilidade (é o contador, não a empresa);
+  - servidor que recusa o acesso (403/429/5xx). Esse caso fica "inconclusivo" e é reverificado em 7 dias.
+- **Pontuam como oportunidade:**
+  - domínio próprio sem site no ar;
+  - página vazia ou estacionada.
+- **Site no ar:** preenche o campo *Site*.
+
+A verificação acessa só a página inicial pública do domínio da própria empresa.
+
+**Espaço no banco.** Com `DB_SIZE_LIMIT_MB` (500 no workflow, o limite do Supabase gratuito), o worker estima o espaço antes de gravar. Se a carga não couber, ele não grava nada e explica o motivo na Central de importação. Depois de contratar o plano Pro, crie a variável `DB_SIZE_LIMIT_MB=8000` no GitHub.
+
 ## Regras de identificação de leads
 
 Um lead é criado automaticamente quando o estabelecimento atende a todas estas condições:

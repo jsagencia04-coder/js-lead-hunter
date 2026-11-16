@@ -214,3 +214,16 @@ def test_once_importa_e_respeita_tempo(fresh_db, tmp_path):
         w.run_job(w.claim())
     job = q(fresh_db, "select status from import_jobs where id = %s", job_id)[0]
     assert job["status"] == "pendente"
+
+
+def test_trava_de_espaco_no_banco_nao_grava(fresh_db, tmp_path):
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        w = make_worker(fresh_db, rf.url, tmp_path)
+        object.__setattr__(w.s, "db_size_limit_mb", 1)  # limite artificialmente baixo
+        job = run_import(w)
+    assert job["status"] == "falhou"
+    assert "Espaço insuficiente no banco" in job["errors"][-1]["msg"]
+    assert not q(fresh_db, "select 1 from leads")
+    assert not q(fresh_db, "select 1 from import_jobs where is_current")
