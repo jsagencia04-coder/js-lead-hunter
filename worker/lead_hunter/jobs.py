@@ -245,6 +245,16 @@ class Worker:
             current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
             projected = current + data.establishments * 4096
             limit = self.s.db_size_limit_mb * 1024 * 1024 * 0.95
+            if projected > limit:
+                from .archive import free_space_for_import
+
+                self._log(job_id, f"Banco com {current / 1e6:.0f} MB; previsto {projected / 1e6:.0f} MB. "
+                                  "Arquivando leads sem contato de competências anteriores para liberar espaço")
+                res = free_space_for_import(self.s.database_url)
+                if res:
+                    self._log(job_id, f"Arquivados: {res.get('leads', 0)} leads sem contato")
+                current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
+                projected = current + data.establishments * 4096
             self._log(job_id, f"Banco: {current / 1e6:.0f} MB; previsto após a carga: {projected / 1e6:.0f} MB "
                               f"(limite {self.s.db_size_limit_mb} MB)")
             if projected > limit:
@@ -311,7 +321,17 @@ class Worker:
                 break
             job = self.claim()
         self.enrich()
+        self.archive()
         self.heartbeat()
+
+    def archive(self) -> None:
+        """Arquivamento diário de leads sem contato (regras em Administração)."""
+        from .archive import run_scheduled
+
+        try:
+            run_scheduled(self.s.database_url)
+        except Exception:  # noqa: BLE001 — nunca derruba o worker
+            log.exception("Falha no arquivamento de leads")
 
     def enrich(self) -> None:
         """Verifica a presença digital de um lote de leads (usa o tempo que sobrar da rodada)."""

@@ -18,6 +18,7 @@ const TABS = [
   { key: 'usuarios', label: 'Usuários' },
   { key: 'bloqueios', label: 'Oposição ao contato' },
   { key: 'regras', label: 'Serviços e pontuação' },
+  { key: 'arquivamento', label: 'Arquivamento' },
   { key: 'auditoria', label: 'Auditoria' },
 ] as const
 type Tab = (typeof TABS)[number]['key']
@@ -44,6 +45,7 @@ export default function Admin() {
       {tab === 'usuarios' && <Users />}
       {tab === 'bloqueios' && <Suppressions />}
       {tab === 'regras' && <Rules />}
+      {tab === 'arquivamento' && <Archive />}
       {tab === 'auditoria' && <Audit />}
     </>
   )
@@ -399,6 +401,159 @@ function Rules() {
             ))}
           </TBody>
         </Table>
+      </Card>
+    </>
+  )
+}
+
+/* ---------------------------- Arquivamento ---------------------------- */
+interface ArchiveCfg { ativo: boolean; dias: number; dias_alta: number; liberar_espaco_na_importacao: boolean;
+  ultima_execucao?: string; ultimo_resultado?: { leads: number } }
+interface ArchiveRow { cnpj: string; razao_social: string | null; nome_fantasia: string | null; uf: string | null;
+  municipio: string | null; cnae_principal: string | null; data_inicio_atividade: string | null; telefone: string | null;
+  email: string | null; score: number | null; priority: string | null; archived_at: string; motivo: string }
+
+function Archive() {
+  const fb = useFeedback()
+  const [cfg, setCfg] = useState<ArchiveCfg | null>(null)
+  const [summary, setSummary] = useState<{ total: number; ultimo: string | null; banco_mb: number } | null>(null)
+  const [term, setTerm] = useState('')
+  const [rows, setRows] = useState<ArchiveRow[]>([])
+  const [searched, setSearched] = useState(false)
+
+  const load = useCallback(async () => {
+    const [c, s] = await Promise.all([
+      supabase.from('app_settings').select('value').eq('key', 'arquivamento').single(),
+      supabase.rpc('archive_summary'),
+    ])
+    if (c.error) fb.setError(c.error.message)
+    setCfg(c.data?.value as ArchiveCfg)
+    setSummary(s.data as { total: number; ultimo: string | null; banco_mb: number })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [load])
+
+  async function save() {
+    if (!cfg) return
+    fb.reset()
+    if (cfg.dias < 7 || cfg.dias_alta < cfg.dias) return fb.setError('Use pelo menos 7 dias, e dias da alta prioridade ≥ dias gerais.')
+    const { error } = await supabase.from('app_settings').update({ value: cfg, updated_at: new Date().toISOString() }).eq('key', 'arquivamento')
+    if (error) return fb.setError(error.message)
+    fb.setOk('Regras de arquivamento salvas. Valem a partir da próxima execução do worker.')
+  }
+
+  function query() {
+    let q = supabase.from('lead_archive').select('*')
+    const t = term.trim()
+    if (t) {
+      const digits = normalizeCnpj(t)
+      q = digits.length >= 8 && /^[0-9A-Z]+$/.test(digits)
+        ? q.like('cnpj', `${digits}%`)
+        : q.or(`razao_social.ilike.%${t.replace(/[,()]/g, ' ')}%,nome_fantasia.ilike.%${t.replace(/[,()]/g, ' ')}%`)
+    }
+    return q.order('archived_at', { ascending: false })
+  }
+
+  async function search(e?: FormEvent) {
+    e?.preventDefault()
+    fb.reset()
+    const { data, error } = await query().limit(100)
+    if (error) return fb.setError(error.message)
+    setRows((data as ArchiveRow[]) ?? [])
+    setSearched(true)
+  }
+
+  async function exportCsv() {
+    fb.reset()
+    const all: ArchiveRow[] = []
+    for (let from = 0; from < 20000; from += 1000) {
+      const { data, error } = await query().range(from, from + 999)
+      if (error) return fb.setError(error.message)
+      all.push(...((data as ArchiveRow[]) ?? []))
+      if (!data || data.length < 1000) break
+    }
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const header = ['CNPJ', 'Razão social', 'Nome fantasia', 'UF', 'Município', 'CNAE', 'Abertura', 'Telefone', 'E-mail', 'Pontuação', 'Prioridade', 'Arquivado em', 'Motivo']
+    const lines = all.map((r) => [formatCnpj(r.cnpj), r.razao_social, r.nome_fantasia, r.uf, r.municipio, r.cnae_principal,
+      r.data_inicio_atividade, r.telefone, r.email, r.score, r.priority, formatDateTime(r.archived_at), r.motivo].map(esc).join(';'))
+    const blob = new Blob(['\uFEFF' + [header.map(esc).join(';'), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `js-lead-hunter-arquivo-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  return (
+    <>
+      {fb.view}
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Regras de arquivamento</CardTitle>
+            <CardDescription>
+              Só são arquivados leads sem nenhuma ação comercial: etapa “Novo lead”, sem responsável, sem follow-up,
+              sem anotação e sem contato. A ficha resumida continua consultável abaixo.
+            </CardDescription>
+          </CardHeader>
+          {cfg && (
+            <CardContent className="space-y-3 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" className="h-4 w-4 accent-primary" checked={cfg.ativo}
+                  onChange={(e) => setCfg({ ...cfg, ativo: e.target.checked })} /> Arquivamento automático ativo
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1"><Label>Arquivar após (dias)</Label>
+                  <Input type="number" min={7} value={cfg.dias} onChange={(e) => setCfg({ ...cfg, dias: Number(e.target.value) })} /></div>
+                <div className="space-y-1"><Label>Alta prioridade após (dias)</Label>
+                  <Input type="number" min={7} value={cfg.dias_alta} onChange={(e) => setCfg({ ...cfg, dias_alta: Number(e.target.value) })} /></div>
+              </div>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" className="h-4 w-4 accent-primary" checked={cfg.liberar_espaco_na_importacao}
+                  onChange={(e) => setCfg({ ...cfg, liberar_espaco_na_importacao: e.target.checked })} />
+                Se faltar espaço numa importação, arquivar leads sem contato (exceto alta prioridade)
+              </label>
+              <Button onClick={save}><Save className="h-4 w-4" /> Salvar regras</Button>
+            </CardContent>
+          )}
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Situação</CardTitle></CardHeader>
+          <CardContent className="space-y-1 text-sm">
+            <p><span className="text-muted-foreground">Tamanho do banco: </span><strong>{summary?.banco_mb ?? '—'} MB</strong>
+              <span className="text-muted-foreground"> (plano gratuito do Supabase: 500 MB)</span></p>
+            <p><span className="text-muted-foreground">Leads arquivados: </span><strong>{summary ? summary.total.toLocaleString('pt-BR') : '—'}</strong></p>
+            <p><span className="text-muted-foreground">Último arquivamento: </span><strong>{formatDateTime(summary?.ultimo)}</strong></p>
+            <p><span className="text-muted-foreground">Última verificação automática: </span><strong>{formatDateTime(cfg?.ultima_execucao)}</strong></p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="mt-6">
+        <CardHeader><CardTitle>Consultar arquivo</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={search} className="flex flex-col gap-2 md:flex-row">
+            <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="CNPJ, razão social ou nome fantasia (vazio = mais recentes)" />
+            <Button type="submit">Buscar</Button>
+            <Button type="button" variant="outline" onClick={exportCsv}>Exportar para Excel (CSV)</Button>
+          </form>
+        </CardContent>
+        {searched && (
+          <Table>
+            <THead><tr><TH>Empresa</TH><TH>Local</TH><TH>Contato</TH><TH>Pontuação</TH><TH>Arquivado</TH></tr></THead>
+            <TBody>
+              {rows.length === 0 && <tr><TD colSpan={5} className="py-8 text-center text-muted-foreground">Nada encontrado.</TD></tr>}
+              {rows.map((r) => (
+                <TR key={r.cnpj}>
+                  <TD><p className="font-medium">{r.nome_fantasia || r.razao_social}</p><p className="text-xs text-muted-foreground">{formatCnpj(r.cnpj)}</p></TD>
+                  <TD>{r.municipio ?? '—'} / {r.uf ?? '—'}</TD>
+                  <TD className="text-xs">{r.telefone ?? '—'}<br />{r.email ?? ''}</TD>
+                  <TD>{r.score ?? '—'}</TD>
+                  <TD className="text-xs">{formatDateTime(r.archived_at)}<br /><Muted>{r.motivo}</Muted></TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        )}
       </Card>
     </>
   )

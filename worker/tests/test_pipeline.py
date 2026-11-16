@@ -163,7 +163,7 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
     assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 9
+    assert len(q(fresh_db, "select * from app_migrations")) == 10
     assert migrate(fresh_db) == []
 
 
@@ -188,7 +188,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 9
+        assert len(migrate(url)) == 10
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:
@@ -227,3 +227,50 @@ def test_trava_de_espaco_no_banco_nao_grava(fresh_db, tmp_path):
     assert "Espaço insuficiente no banco" in job["errors"][-1]["msg"]
     assert not q(fresh_db, "select 1 from leads")
     assert not q(fresh_db, "select 1 from import_jobs where is_current")
+
+
+def test_arquivamento_preserva_leads_trabalhados(fresh_db, tmp_path):
+    from lead_hunter.archive import run_scheduled
+
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        run_import(make_worker(fresh_db, rf.url, tmp_path))
+    # todos os leads "envelhecem" 40 dias
+    q(fresh_db, "update leads set created_at = now() - interval '40 days' returning 1")
+    # um lead trabalhado (anotação) e um de alta prioridade não podem sair
+    lead = q(fresh_db, "select id from leads where cnpj_basico = '66777888'")[0]["id"]
+    q(fresh_db, "insert into lead_events (lead_id, event_type, content) values (%s, 'anotacao', 'ligar segunda') returning 1", lead)
+    q(fresh_db, "update leads set score = 90 where cnpj_basico = '12ABC345' returning 1")
+    antes = q(fresh_db, "select count(*) n from leads")[0]["n"]
+
+    res = run_scheduled(fresh_db)
+    assert res["leads"] == antes - 2
+    restantes = {r["cnpj_basico"] for r in q(fresh_db, "select cnpj_basico from leads")}
+    assert restantes == {"66777888", "12ABC345"}
+    arq = q(fresh_db, "select * from lead_archive where cnpj_basico = '11222333'")[0]
+    assert arq["razao_social"] == "PADARIA SÃO JOÃO LTDA" and arq["telefone"] == "11912345678"
+    # dados cadastrais das empresas arquivadas saem do banco operacional
+    assert not q(fresh_db, "select 1 from establishments where cnpj_basico = '11222333'")
+    assert not q(fresh_db, "select 1 from companies where cnpj_basico = '11222333'")
+    # roda no máximo uma vez por dia
+    assert run_scheduled(fresh_db) is None
+
+
+def test_importacao_libera_espaco_arquivando(fresh_db, tmp_path):
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        assert run_import(make_worker(fresh_db, rf.url, tmp_path))["status"] == "concluido"
+        build_competence(root, "2026-11", extra_est=[est_row("77888999", fantasia="NOVA")])
+        w = make_worker(fresh_db, rf.url, tmp_path)
+        # limite abaixo do tamanho atual: força o arquivamento antes de decidir se grava
+        size_mb = q(fresh_db, "select pg_database_size(current_database()) / 1048576 as m")[0]["m"]
+        object.__setattr__(w.s, "db_size_limit_mb", int(size_mb))
+        job = run_import(w, "2026-11")
+    # leads sem contato da competência anterior foram arquivados (fichas preservadas)
+    assert q(fresh_db, "select count(*) n from lead_archive where motivo like 'liberar espaço%%'")[0]["n"] >= 1
+    if job["status"] == "falhou":  # banco de teste minúsculo pode continuar acima do limite
+        assert "Espaço insuficiente" in job["errors"][-1]["msg"]
+    else:
+        assert q(fresh_db, "select 1 from leads where cnpj_basico = '77888999'")

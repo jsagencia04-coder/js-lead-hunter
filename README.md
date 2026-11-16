@@ -68,6 +68,15 @@ A verificação acessa só a página inicial pública do domínio da própria em
 
 **Espaço no banco.** Com `DB_SIZE_LIMIT_MB` (500 no workflow, o limite do Supabase gratuito), o worker estima o espaço antes de gravar. Se a carga não couber, ele não grava nada e explica o motivo na Central de importação. Depois de contratar o plano Pro, crie a variável `DB_SIZE_LIMIT_MB=8000` no GitHub.
 
+## Arquivamento automático
+
+Para caber no plano do banco mês após mês, leads **sem nenhuma ação comercial** saem do banco operacional e ficam numa ficha resumida (`lead_archive`). Ação comercial é qualquer uma destas: etapa diferente de "Novo lead", responsável definido, follow-up, anotação ou contato.
+
+- **Rotina diária:** arquiva leads sem ação comercial com mais de 30 dias, ou 60 dias se forem de alta prioridade.
+- **Na importação:** se a competência nova não couber no banco, arquiva antes os leads sem ação comercial já existentes, exceto os de alta prioridade.
+- **Depois de arquivar:** o worker compacta as tabelas (`VACUUM FULL`) para o espaço voltar ao plano.
+- **Configuração e consulta:** as regras, a consulta e a exportação do arquivo ficam em *Administração → Arquivamento*.
+
 ## Regras de identificação de leads
 
 Um lead é criado automaticamente quando o estabelecimento atende a todas estas condições:
