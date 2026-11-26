@@ -3,6 +3,10 @@
     python -m lead_hunter run                 # laço contínuo (produção)
     python -m lead_hunter check               # mostra a competência mais recente na fonte
     python -m lead_hunter import [AAAA-MM]    # importa agora (sem esperar a interface)
+    python -m lead_hunter inventory           # quantidades de registros (antes/depois de mudanças)
+    python -m lead_hunter backup [PASTA]      # backup verificável (CSV.gz + manifesto com SHA-256)
+    python -m lead_hunter backup-verify PASTA
+    python -m lead_hunter restore-test PASTA URL_DE_UM_BANCO_VAZIO_DE_TESTE
 """
 from __future__ import annotations
 
@@ -51,6 +55,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="lista a competência mais recente disponível")
     sub.add_parser("once", help="uma rodada (para execução agendada, ex.: GitHub Actions)")
     sub.add_parser("migrate", help="aplica as migrations pendentes do banco")
+    sub.add_parser("inventory", help="registra e mostra as quantidades de registros")
+    bk = sub.add_parser("backup", help="backup verificável do banco")
+    bk.add_argument("folder", nargs="?", help="pasta de destino (padrão: ./backups)")
+    bv = sub.add_parser("backup-verify", help="confere um backup")
+    bv.add_argument("folder")
+    rt = sub.add_parser("restore-test", help="restaura um backup num banco vazio de teste e compara")
+    rt.add_argument("folder")
+    rt.add_argument("target_url")
     imp = sub.add_parser("import", help="importa uma competência imediatamente")
     imp.add_argument("competence", nargs="?", help="AAAA-MM (padrão: mais recente completa)")
     args = p.parse_args(argv)
@@ -79,6 +91,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Competência: {comp} | referência: {reference_date(files)} | {len(files)} arquivos | {total / 1e9:.1f} GB")
         return 0
 
+    if args.cmd in ("backup", "backup-verify", "restore-test"):
+        from . import backup as bk
+
+        if args.cmd == "backup":
+            return bk.main_backup(Settings.from_env().database_url, args.folder)
+        if args.cmd == "backup-verify":
+            return bk.main_verify(args.folder)
+        return bk.main_restore_test(args.folder, args.target_url)
+
     if args.cmd == "migrate":
         from .migrate import migrate
 
@@ -90,6 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             worker.loop()
+        elif args.cmd == "inventory":
+            import json
+
+            counts = worker.inventory("manual")
+            print(json.dumps(counts, ensure_ascii=False, indent=2) if counts else "Inventário indisponível (aplique as migrations)")
         elif args.cmd == "once":
             worker.once()
         elif args.cmd == "import":

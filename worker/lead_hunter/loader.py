@@ -47,16 +47,23 @@ SIM_UPDATE_COLS = ["opcao_simples", "data_opcao_simples", "data_exclusao_simples
 
 
 def export_existing_cnpjs(conn: psycopg.Connection, dest: Path) -> int:
-    """Grava os CNPJs já presentes na base operacional (para atualizar a situação cadastral)."""
+    """Grava os CNPJs já presentes na base operacional (para atualizar a situação cadastral)
+    e os de leads arquivados com restauração solicitada (para reler o cadastro completo)."""
     n = 0
     with open(dest, "w", newline="") as fh, conn.cursor() as cur:
         fh.write("cnpj\n")
-        with cur.copy("COPY (SELECT cnpj FROM public.establishments) TO STDOUT") as cp:
+        restore = "UNION SELECT public.worker_restore_targets()" if _has_restore(cur) else ""
+        with cur.copy(f"COPY (SELECT cnpj FROM public.establishments {restore}) TO STDOUT") as cp:
             for chunk in cp:
                 data = bytes(chunk)
                 n += data.count(b"\n")
                 fh.write(data.decode())
     return n
+
+
+def _has_restore(cur: psycopg.Cursor) -> bool:
+    cur.execute("select to_regprocedure('public.worker_restore_targets()') is not null")
+    return bool(cur.fetchone()[0])
 
 
 def _copy_csv(cur: psycopg.Cursor, table: str, path: Path) -> int:
@@ -178,6 +185,11 @@ def load(conn: psycopg.Connection, data: PreparedData, job_id: str, competence: 
              WHERE m.code = x.municipio_code AND m.uf IS DISTINCT FROM x.uf""")
 
         # ---- leads, pontuação e recomendações ----
+        # restauração antes da criação: o lead volta com origem "restaurado"
+        stats["restored_leads"] = 0
+        if _has_restore(cur):
+            cur.execute("SELECT public.worker_restore_archived_leads(%s)", (job_id,))
+            stats["restored_leads"] = cur.fetchone()[0]
         cur.execute("SELECT public.worker_create_leads(%s, %s, %s, %s)",
                     (job_id, data.window_from, data.window_to, include_branches))
         stats["new_leads"] = cur.fetchone()[0]

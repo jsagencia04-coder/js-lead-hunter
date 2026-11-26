@@ -70,16 +70,18 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 
 A verificação acessa só a página inicial pública do domínio da própria empresa.
 
-**Espaço no banco.** Com `DB_SIZE_LIMIT_MB` (500 no workflow, o limite do Supabase gratuito), o worker estima o espaço antes de gravar. Se a carga não couber, ele não grava nada e explica o motivo na Central de importação. Depois de contratar o plano Pro, crie a variável `DB_SIZE_LIMIT_MB=8000` no GitHub.
+**Espaço no banco.** Com `DB_SIZE_LIMIT_MB` (500 no workflow, o limite do Supabase gratuito), o worker estima o espaço antes de gravar. Se a carga não couber, ele não grava nem apaga nada e avisa na Central de importação. Depois de contratar o plano Pro, crie a variável `DB_SIZE_LIMIT_MB=8000` no GitHub.
 
-## Arquivamento automático
+## Preservação dos dados (JS Lead Hunter 2.0)
 
-Para caber no plano do banco mês após mês, leads **sem nenhuma ação comercial** saem do banco operacional e ficam numa ficha resumida (`lead_archive`). Ação comercial é qualquer uma destas: etapa diferente de "Novo lead", responsável definido, follow-up, anotação ou contato.
-
-- **Rotina diária:** arquiva leads sem ação comercial com mais de 30 dias, ou 60 dias se forem de alta prioridade.
-- **Na importação:** se a competência nova não couber no banco, o worker **primeiro estima** quanto o arquivamento liberaria. Só arquiva se isso fizer a carga caber; caso contrário falha sem apagar nada (regressão de 17/11/2026, quando 69 mil leads foram arquivados e a carga falhou mesmo assim).
-- **Depois de arquivar:** o worker compacta as tabelas (`VACUUM FULL`) para o espaço voltar ao plano.
-- **Configuração e consulta:** as regras, a consulta e a exportação do arquivo ficam em *Administração → Arquivamento*.
+- **Nada é excluído por idade.** O arquivamento automático está **desligado** (migration 012); a janela de captação (`LEAD_WINDOW_DAYS`) só decide quais empresas *novas* viram leads. Um administrador pode religar o arquivamento em *Administração → Arquivamento*, e ele só alcança leads sem nenhuma ação comercial.
+- **Sem espaço no banco:** a importação para antes de gravar, não apaga nada e mostra o aviso na *Central de importação*.
+- **Atualização cadastral pelo CNPJ:** a reimportação atualiza os dados mantendo o mesmo lead (id, etapa, responsável, histórico). Cada mudança cadastral (telefone, endereço, situação, CNAE…) fica registrada em `registry_changes`, com valor anterior e novo.
+- **Leads arquivados podem voltar.** Em *Administração → Arquivamento*: busque e clique em *Restaurar* (ou *Restaurar todos*). Na próxima importação o worker relê o cadastro completo da empresa nos arquivos oficiais da Receita e recria o lead com origem "restaurado". Empresas bloqueadas para contato não voltam. Para não esperar a próxima competência, use *Iniciar importação* (reimporta a competência vigente, sem duplicar).
+- **O que o arquivo guarda:** CNPJ, razão social, nome fantasia, UF, município, CNAE, data de abertura, telefone, e-mail, site, pontuação, prioridade, competência, datas e motivo. Endereço completo, porte, capital social, Simples/MEI e recomendações voltam pela restauração.
+- **Inventário:** no início e no fim de cada rodada o worker registra as quantidades de empresas, leads, arquivados, contatos, propostas, bloqueios etc. (`data_inventory_snapshots`), e a *Central de importação* compara os dois últimos retratos. Se algo diminuir, o log da rodada mostra um aviso. Só totais vão para o log; nenhum dado de empresa.
+- **Backup verificável:** `python -m lead_hunter backup` (no Windows: `worker\windows\6-fazer-backup.bat`) gera uma pasta com um CSV compactado por tabela e um manifesto com a quantidade de linhas e o SHA-256 de cada arquivo, tirado num único instante (transação somente leitura) e conferido ao final. `backup-verify PASTA` confere de novo; `restore-test PASTA URL` restaura num banco **vazio** de teste e compara tabela por tabela (recusa bancos com dados). O backup tem dados pessoais: guarde em local protegido e **nunca** envie ao GitHub (a pasta `backups/` está no `.gitignore`).
+- **Antes de cada migration**, o `migrate` copia os dados comerciais (perfis, leads trabalhados, histórico, propostas, bloqueios, regras) para um esquema `backup_AAAAMMDDHHMM_pre_<versão>` no próprio banco.
 
 ## Regras de identificação de leads
 

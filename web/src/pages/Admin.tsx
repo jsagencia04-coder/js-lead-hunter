@@ -411,7 +411,8 @@ interface ArchiveCfg { ativo: boolean; dias: number; dias_alta: number; liberar_
   ultima_execucao?: string; ultimo_resultado?: { leads: number } }
 interface ArchiveRow { cnpj: string; razao_social: string | null; nome_fantasia: string | null; uf: string | null;
   municipio: string | null; cnae_principal: string | null; data_inicio_atividade: string | null; telefone: string | null;
-  email: string | null; score: number | null; priority: string | null; archived_at: string; motivo: string }
+  email: string | null; score: number | null; priority: string | null; archived_at: string; motivo: string
+  restore_requested_at: string | null; restored_at: string | null; restore_note: string | null }
 
 function Archive() {
   const fb = useFeedback()
@@ -462,6 +463,23 @@ function Archive() {
     setSearched(true)
   }
 
+  async function restore(cnpjs: string[] | null) {
+    fb.reset()
+    if (!cnpjs && !window.confirm('Solicitar a restauração de TODOS os leads arquivados? Eles voltam à base na próxima importação, se couberem no banco.')) return
+    const { data, error } = await supabase.rpc('request_archive_restore', { p_cnpjs: cnpjs, p_all: !cnpjs })
+    if (error) return fb.setError(error.message)
+    fb.setOk(`${data} lead(s) marcados para restauração. Na próxima importação o worker relê o cadastro completo na Receita e recria o lead (origem "restaurado"). Para não esperar a próxima competência, use "Iniciar importação" na Central de importação.`)
+    search()
+    load()
+  }
+
+  async function cancelRestore(cnpj: string) {
+    fb.reset()
+    const { error } = await supabase.rpc('cancel_archive_restore', { p_cnpjs: [cnpj] })
+    if (error) return fb.setError(error.message)
+    search()
+  }
+
   async function exportCsv() {
     fb.reset()
     const all: ArchiveRow[] = []
@@ -491,8 +509,9 @@ function Archive() {
           <CardHeader>
             <CardTitle>Regras de arquivamento</CardTitle>
             <CardDescription>
-              Só são arquivados leads sem nenhuma ação comercial: etapa “Novo lead”, sem responsável, sem follow-up,
-              sem anotação e sem contato. A ficha resumida continua consultável abaixo.
+              Política atual: <strong>nenhuma empresa é excluída por idade</strong>; a janela de captação é só filtro. Se o banco
+              ficar sem espaço, a importação é interrompida com aviso e nada é apagado. O arquivamento só volta a funcionar
+              se um administrador o religar aqui (apenas leads sem nenhuma ação comercial).
             </CardDescription>
           </CardHeader>
           {cfg && (
@@ -535,13 +554,14 @@ function Archive() {
             <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="CNPJ, razão social ou nome fantasia (vazio = mais recentes)" />
             <Button type="submit">Buscar</Button>
             <Button type="button" variant="outline" onClick={exportCsv}>Exportar para Excel (CSV)</Button>
+            <Button type="button" variant="outline" onClick={() => restore(null)}>Restaurar todos</Button>
           </form>
         </CardContent>
         {searched && (
           <Table>
-            <THead><tr><TH>Empresa</TH><TH>Local</TH><TH>Contato</TH><TH>Pontuação</TH><TH>Arquivado</TH></tr></THead>
+            <THead><tr><TH>Empresa</TH><TH>Local</TH><TH>Contato</TH><TH>Pontuação</TH><TH>Arquivado</TH><TH>Restauração</TH></tr></THead>
             <TBody>
-              {rows.length === 0 && <tr><TD colSpan={5} className="py-8 text-center text-muted-foreground">Nada encontrado.</TD></tr>}
+              {rows.length === 0 && <tr><TD colSpan={6} className="py-8 text-center text-muted-foreground">Nada encontrado.</TD></tr>}
               {rows.map((r) => (
                 <TR key={r.cnpj}>
                   <TD><p className="font-medium">{r.nome_fantasia || r.razao_social}</p><p className="text-xs text-muted-foreground">{formatCnpj(r.cnpj)}</p></TD>
@@ -549,6 +569,17 @@ function Archive() {
                   <TD className="text-xs">{r.telefone ?? '—'}<br />{r.email ?? ''}</TD>
                   <TD>{r.score ?? '—'}</TD>
                   <TD className="text-xs">{formatDateTime(r.archived_at)}<br /><Muted>{r.motivo}</Muted></TD>
+                  <TD className="text-xs">
+                    {r.restored_at ? <Badge variant="success">Restaurado em {formatDateTime(r.restored_at)}</Badge>
+                      : r.restore_requested_at ? (
+                        <div className="space-y-1">
+                          <Badge variant="warning">Aguardando importação</Badge>
+                          {r.restore_note && <p className="text-muted-foreground">{r.restore_note}</p>}
+                          <button className="underline" onClick={() => cancelRestore(r.cnpj)}>cancelar</button>
+                        </div>
+                      ) : <Button size="sm" variant="outline" onClick={() => restore([r.cnpj])}>Restaurar</Button>}
+                    {r.restored_at && r.restore_note && <p className="mt-1 text-muted-foreground">{r.restore_note}</p>}
+                  </TD>
                 </TR>
               ))}
             </TBody>

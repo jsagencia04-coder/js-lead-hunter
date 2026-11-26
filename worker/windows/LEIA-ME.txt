@@ -19,6 +19,7 @@ PASSO A PASSO
   3-iniciar-worker.bat     deixa o worker rodando (atende a Central de importacao do sistema)
   4-importar-agora.bat     importa imediatamente, sem esperar a interface
   5-iniciar-com-o-windows.bat (opcional) abre o worker automaticamente ao entrar no Windows
+  6-fazer-backup.bat       backup completo e verificado do banco na pasta "backups"
 
 DATABASE_URL
   Supabase > Project Settings > Database > Connect > "Session pooler" (porta 5432).

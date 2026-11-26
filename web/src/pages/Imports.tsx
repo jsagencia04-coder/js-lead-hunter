@@ -55,13 +55,16 @@ export default function Imports() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [snapshots, setSnapshots] = useState<{ id: number; taken_at: string; label: string; counts: Record<string, unknown> }[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [j, i] = await Promise.all([
+    const [j, i, s] = await Promise.all([
       supabase.from('import_jobs').select('*').order('created_at', { ascending: false }).limit(30),
       supabase.from('integration_status').select('*').order('key'),
+      supabase.from('data_inventory_snapshots').select('*').order('id', { ascending: false }).limit(2),
     ])
+    setSnapshots((s.data as typeof snapshots) ?? [])
     if (j.error || i.error) setError((j.error ?? i.error)!.message)
     setJobs((j.data as ImportJob[]) ?? [])
     setIntegrations((i.data as IntegrationStatus[]) ?? [])
@@ -132,6 +135,15 @@ export default function Imports() {
           Veja a seção “Worker” do README para colocá-lo no ar.
         </Alert>
       )}
+      {(() => {
+        const a = worker?.details?.alerta_espaco as { em: string; usado_mb: number; necessario_mb: number; limite_mb: number; mensagem: string } | undefined
+        return a ? (
+          <Alert tone="error" title="Importação interrompida por falta de espaço no banco" className="mb-6">
+            {a.mensagem} Uso atual: {a.usado_mb} MB; a carga precisaria de cerca de {a.necessario_mb} MB (limite configurado: {a.limite_mb} MB).
+            Para continuar, amplie o plano do banco e ajuste DB_SIZE_LIMIT_MB, ou reduza LEAD_WINDOW_DAYS. Aviso de {formatDateTime(a.em)}.
+          </Alert>
+        ) : null
+      })()}
       {error && <Alert tone="error" className="mb-4">{error}</Alert>}
       {notice && <Alert tone="info" className="mb-4">{notice}</Alert>}
 
@@ -161,6 +173,8 @@ export default function Imports() {
           </CardContent>
         </Card>
       </div>
+
+      {snapshots.length > 0 && <InventoryCard snapshots={snapshots} />}
 
       <Card>
         <CardHeader><CardTitle>Histórico de execuções</CardTitle></CardHeader>
@@ -224,5 +238,44 @@ export default function Imports() {
         </Table>
       </Card>
     </>
+  )
+}
+
+const INVENTORY_LABEL: Record<string, string> = {
+  empresas: 'Empresas', estabelecimentos: 'Estabelecimentos', leads: 'Leads', leads_ativos: 'Leads ativos',
+  leads_arquivados: 'Leads arquivados', arquivados_restauracao_pendente: 'Restauração pendente',
+  arquivados_restaurados: 'Arquivados restaurados', eventos: 'Eventos no histórico', eventos_comerciais: 'Ações comerciais',
+  contatos: 'Contatos', respostas: 'Respostas', propostas: 'Propostas', bloqueios: 'Bloqueios de contato',
+  usuarios: 'Usuários', alteracoes_cadastrais: 'Alterações cadastrais', banco_mb: 'Tamanho do banco (MB)',
+}
+
+function InventoryCard({ snapshots }: { snapshots: { id: number; taken_at: string; label: string; counts: Record<string, unknown> }[] }) {
+  const [last, prev] = snapshots
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Inventário dos dados</CardTitle>
+        <CardDescription>
+          Quantidades registradas pelo worker no início e no fim de cada rodada, para comprovar que nada foi perdido.
+          Último retrato: {last.label} · {formatDateTime(last.taken_at)}{prev ? ` (comparado com: ${prev.label} · ${formatDateTime(prev.taken_at)})` : ''}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-3">
+        {Object.entries(INVENTORY_LABEL).map(([k, label]) => {
+          const v = Number(last.counts[k] ?? 0)
+          const p = prev ? Number(prev.counts[k] ?? 0) : null
+          const diff = p === null ? 0 : v - p
+          const drop = diff < 0 && k !== 'arquivados_restauracao_pendente' && k !== 'banco_mb'
+          return (
+            <div key={k} className="flex justify-between border-b py-1">
+              <span className="text-muted-foreground">{label}</span>
+              <span className={`tabular-nums ${drop ? 'font-semibold text-red-700' : ''}`}>
+                {nf.format(v)}{diff !== 0 && <span className="ml-1 text-xs">({diff > 0 ? '+' : ''}{nf.format(diff)})</span>}
+              </span>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
   )
 }

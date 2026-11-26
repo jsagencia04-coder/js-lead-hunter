@@ -225,3 +225,58 @@ select pg_temp.assert(
   'mesma empresa vira lead quando não está no arquivo');
 select pg_temp.assert(archive_candidates_count(true) >= 1, 'estimativa de arquivamento sem apagar nada');
 reset role;
+
+-- =====================================================================
+-- Migration 012 — preservação dos dados
+-- =====================================================================
+select pg_temp.assert((select not (value ->> 'ativo')::boolean and not (value ->> 'liberar_espaco_na_importacao')::boolean
+                         from app_settings where key = 'arquivamento'), 'arquivamento automático desligado');
+select pg_temp.assert((select count(*) >= 1 from data_inventory_snapshots), 'inventário registrado na migration');
+
+-- Histórico cadastral
+update establishments set telefone1 = '99998888' where cnpj = '11222333000181';
+select pg_temp.assert((select changes -> 'telefone1' ->> 'para' = '99998888' from registry_changes
+                        where key = '11222333000181' order by id desc limit 1), 'alteração cadastral registrada com de/para');
+update establishments set telefone1 = '99998888' where cnpj = '11222333000181';
+select pg_temp.assert((select count(*) = 1 from registry_changes where key = '11222333000181'), 'atualização sem mudança não gera histórico');
+
+-- Restauração de arquivados
+insert into lead_archive (cnpj, cnpj_basico, razao_social, motivo) values ('44555666000100', '44555666', 'X', 'teste');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333', false);
+select pg_temp.expect_error($$select request_archive_restore(null, true)$$, 'comercial solicitar restauração');
+select pg_temp.expect_error($$select take_inventory_snapshot('x')$$, 'comercial registrar inventário');
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+select pg_temp.expect_error($$select request_archive_restore()$$, 'restauração sem CNPJs nem confirmação');
+select pg_temp.assert(request_archive_restore(array['44555666000100']) = 1, 'admin solicita restauração');
+reset role;
+set role service_role;
+select pg_temp.assert(exists (select 1 from worker_restore_targets() t where t = '44555666000100'), 'worker recebe CNPJ a reler');
+select worker_restore_archived_leads('aaaaaaaa-0000-0000-0000-000000000001');
+select pg_temp.assert((select restored_at is not null and restore_note = 'Empresa já estava na base operacional'
+                         from lead_archive where cnpj = '44555666000100'), 'empresa que já tem lead é marcada sem duplicar');
+select pg_temp.assert((select count(*) = 1 from leads where cnpj_basico = '44555666'), 'sem lead duplicado');
+reset role;
+
+-- restauração completa: lead arquivado cujo cadastro volta pela importação
+delete from leads where cnpj_basico = '44555666';
+update lead_archive set restored_at = null, restored_lead_id = null, restore_note = null,
+       restore_requested_at = now(), cnpj = (select cnpj from establishments where cnpj_basico = '44555666')
+ where cnpj_basico = '44555666';
+set role service_role;
+select pg_temp.assert(worker_restore_archived_leads('aaaaaaaa-0000-0000-0000-000000000001') = 1, 'lead arquivado restaurado');
+reset role;
+select pg_temp.assert((select source = 'restaurado' from leads where cnpj_basico = '44555666'), 'origem "restaurado"');
+select pg_temp.assert((select restored_lead_id = (select id from leads where cnpj_basico = '44555666')
+                         from lead_archive where cnpj_basico = '44555666'), 'arquivo aponta para o lead restaurado');
+
+-- empresa bloqueada não volta
+insert into companies (cnpj_basico) values ('77000000');
+insert into contact_suppressions (cnpj_basico, reason) values ('77000000', 'pedido do titular');
+insert into lead_archive (cnpj, cnpj_basico, motivo, restore_requested_at) values ('77000000000100', '77000000', 't', now());
+set role service_role;
+select worker_restore_archived_leads('aaaaaaaa-0000-0000-0000-000000000001');
+reset role;
+select pg_temp.assert((select restored_at is null and restore_note like 'Empresa bloqueada%' from lead_archive
+                        where cnpj_basico = '77000000'), 'bloqueio preservado na restauração');
+select pg_temp.assert((data_inventory() ->> 'bloqueios')::int = 3, 'inventário conta bloqueios');

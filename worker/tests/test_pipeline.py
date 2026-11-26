@@ -163,7 +163,7 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
     assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 11
+    assert len(q(fresh_db, "select * from app_migrations")) == 12
     # cópia de segurança dos dados comerciais antes de aplicar
     schemas = q(fresh_db, "select nspname from pg_namespace where nspname like 'backup_%%'")
     assert len(schemas) == 1
@@ -193,7 +193,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 11
+        assert len(migrate(url)) == 12
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:
@@ -249,6 +249,11 @@ def test_arquivamento_preserva_leads_trabalhados(fresh_db, tmp_path):
     q(fresh_db, "update leads set score = 90 where cnpj_basico = '12ABC345' returning 1")
     antes = q(fresh_db, "select count(*) n from leads")[0]["n"]
 
+    # política 2.0: desligado por padrão, nada é arquivado
+    assert run_scheduled(fresh_db) is None
+    assert q(fresh_db, "select count(*) n from leads")[0]["n"] == antes
+    # o administrador pode religar manualmente
+    q(fresh_db, """update app_settings set value = value || '{"ativo": true}' where key = 'arquivamento' returning 1""")
     res = run_scheduled(fresh_db)
     assert res["leads"] == antes - 2
     restantes = {r["cnpj_basico"] for r in q(fresh_db, "select cnpj_basico from leads")}
@@ -272,6 +277,8 @@ def test_importacao_libera_espaco_arquivando(fresh_db, tmp_path, monkeypatch):
         build_competence(root, "2026-11", extra_est=[est_row("77888999", fantasia="NOVA")])
         # arquivar resolveria (estimativa alta de espaço liberado): arquiva antes de decidir
         monkeypatch.setattr(jobs, "FREED_BYTES_PER_LEAD", 10 ** 12)
+        q(fresh_db, """update app_settings set value = value || '{"ativo": true, "liberar_espaco_na_importacao": true}'
+                        where key = 'arquivamento' returning 1""")
         w = make_worker(fresh_db, rf.url, tmp_path)
         size_mb = q(fresh_db, "select pg_database_size(current_database()) / 1048576 as m")[0]["m"]
         object.__setattr__(w.s, "db_size_limit_mb", int(size_mb))

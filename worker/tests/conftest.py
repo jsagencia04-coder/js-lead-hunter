@@ -14,6 +14,12 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
+def empty_db():
+    """Segundo banco com estrutura e sem dados (destino de testes de restauração)."""
+    yield from fresh_db.__wrapped__()
+
+
+@pytest.fixture
 def fresh_db():
     """Banco limpo com o stub do Supabase + todas as migrations.
 

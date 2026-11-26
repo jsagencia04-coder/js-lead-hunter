@@ -319,6 +319,7 @@ class Worker:
             self._log(job_id, f"Banco: {current / 1e6:.0f} MB; previsto após a carga: {projected / 1e6:.0f} MB "
                               f"(limite {self.s.db_size_limit_mb} MB)")
             if projected > limit:
+                self._space_alert(current, projected)
                 raise JobFailed(
                     f"Espaço insuficiente no banco: {current / 1e6:.0f} MB usados e a carga exigiria cerca de "
                     f"{projected / 1e6:.0f} MB (limite do plano: {self.s.db_size_limit_mb} MB). Nada foi gravado. "
@@ -333,6 +334,9 @@ class Worker:
         self._update(job_id, metadata=json.dumps({**stats, "segundos": round(elapsed),
                                                   "janela": [str(data.window_from), str(data.window_to)],
                                                   "cnpj_dv_invalido": data.invalid_cnpj}))
+        self._space_alert(None, None)
+        if stats.get("restored_leads"):
+            self._log(job_id, f"{stats['restored_leads']} leads arquivados restaurados com cadastro completo")
         self._log(job_id, f"Concluído em {elapsed / 60:.1f} min: {stats['new_leads']} novos leads, "
                           f"{stats['establishments_inserted']} estabelecimentos novos, "
                           f"{stats['establishments_updated']} atualizados")
@@ -340,6 +344,34 @@ class Worker:
         shutil.rmtree(work, ignore_errors=True)
         if not self.s.keep_local_zips:
             shutil.rmtree(comp_dir, ignore_errors=True)
+
+    def _space_alert(self, current: int | None, projected: int | None) -> None:
+        """Aviso de falta de espaço para o administrador (Central de importação)."""
+        alert = None
+        if current is not None:
+            alert = {"em": datetime.now(timezone.utc).isoformat(), "usado_mb": round(current / 1e6),
+                     "necessario_mb": round((projected or 0) / 1e6), "limite_mb": self.s.db_size_limit_mb,
+                     "mensagem": "Importação interrompida por falta de espaço no banco. Nenhum dado foi apagado."}
+        self.state.execute(
+            """UPDATE public.integration_status
+                  SET details = CASE WHEN %s::jsonb IS NULL THEN details - 'alerta_espaco'
+                                     ELSE details || jsonb_build_object('alerta_espaco', %s::jsonb) END,
+                      updated_at = now()
+                WHERE key = 'worker'""", (json.dumps(alert) if alert else None, json.dumps(alert) if alert else None))
+
+    def inventory(self, label: str) -> dict | None:
+        """Retrato das quantidades de registros (só totais, sem dados de empresas)."""
+        try:
+            has = self.state.execute(
+                "select to_regprocedure('public.take_inventory_snapshot(text)') is not null as ok").fetchone()["ok"]
+            if not has:
+                return None
+            counts = self.state.execute("select public.take_inventory_snapshot(%s) as c", (label,)).fetchone()["c"]
+        except Exception:  # noqa: BLE001 — inventário nunca derruba o worker
+            log.exception("Falha ao registrar o inventário")
+            return None
+        log.info("Inventário (%s): %s", label, json.dumps(counts, ensure_ascii=False, sort_keys=True))
+        return counts
 
     # ------------------------------------------------------------ laço principal
     def loop(self):
@@ -371,6 +403,7 @@ class Worker:
                  self.s.lead_window_days, self.s.max_runtime_minutes or "sem")
         self.recover_stale_jobs(resume=True)
         self.heartbeat()
+        before = self.inventory("início da rodada")
         job = self.claim()
         if not job:
             self.scheduled_check()
@@ -384,6 +417,11 @@ class Worker:
         self.enrich()
         self.archive()
         self.heartbeat()
+        after = self.inventory("fim da rodada")
+        if before and after:
+            for k in ("leads", "eventos_comerciais", "propostas", "bloqueios", "leads_arquivados"):
+                if (after.get(k) or 0) < (before.get(k) or 0):
+                    log.warning("Inventário: %s diminuiu de %s para %s nesta rodada", k, before.get(k), after.get(k))
 
     def archive(self) -> None:
         """Arquivamento diário de leads sem contato (regras em Administração)."""
