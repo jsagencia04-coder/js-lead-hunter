@@ -40,6 +40,7 @@ class PreparedData:
     rejected_rows: int = 0
     invalid_cnpj: int = 0
     establishments: int = 0
+    new_establishments: int = 0   # ainda não estão no banco (os demais só são atualizados)
     window_from: date | None = None
     window_to: date | None = None
 
@@ -349,6 +350,11 @@ def _transform_with_polars(work_dir: Path, out_dir: Path, competence: str, resul
     est_df = est.collect()
     result.invalid_cnpj = int(est_df.select((~_cnpj_valid_expr("cnpj")).sum()).item() or 0)
     result.establishments = est_df.height
+    try:
+        existing_df = con.execute("SELECT cnpj FROM existing").pl()
+        result.new_establishments = est_df.join(existing_df, on="cnpj", how="anti").height
+    except Exception:  # noqa: BLE001 — estimativa conservadora: tudo novo
+        result.new_establishments = est_df.height
 
     est_cols = ["cnpj", "cnpj_basico", "cnpj_ordem", "cnpj_dv", "identificador_matriz", "nome_fantasia",
                 "situacao_cadastral", "data_situacao_cadastral", "motivo_situacao", "data_inicio_atividade",

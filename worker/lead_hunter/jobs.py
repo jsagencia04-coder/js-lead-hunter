@@ -272,7 +272,8 @@ class Worker:
                        self.s.duckdb_memory, self.s.duckdb_threads, progress, release)
         self._update(job_id, records_read=data.records_read, files_processed=len(files),
                      error_count=data.rejected_rows)
-        self._log(job_id, f"{data.records_read} linhas lidas; {data.establishments} estabelecimentos selecionados; "
+        self._log(job_id, f"{data.records_read} linhas lidas; {data.establishments} estabelecimentos selecionados "
+                          f"({data.new_establishments} novos); "
                           f"{data.rejected_rows} linhas rejeitadas pelo leitor; {data.invalid_cnpj} CNPJs com DV inválido")
 
         # 4. Validação antes de tocar no banco operacional
@@ -292,7 +293,7 @@ class Worker:
         # (estabelecimento + empresa + lead + histórico + recomendações + índices)
         if self.s.db_size_limit_mb:
             current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
-            projected = current + data.establishments * EST_BYTES
+            projected = current + data.new_establishments * EST_BYTES
             limit = self.s.db_size_limit_mb * 1024 * 1024 * 0.95
             if projected > limit:
                 # Antes de apagar qualquer coisa, estima se o arquivamento resolveria.
@@ -313,7 +314,7 @@ class Worker:
                     if res:
                         self._log(job_id, f"Arquivados: {res.get('leads', 0)} leads sem contato")
                     current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
-                    projected = current + data.establishments * EST_BYTES
+                    projected = current + data.new_establishments * EST_BYTES
                 elif candidates:
                     self._log(job_id, "Arquivar não liberaria espaço suficiente: nenhum lead foi arquivado", "aviso")
             self._log(job_id, f"Banco: {current / 1e6:.0f} MB; previsto após a carga: {projected / 1e6:.0f} MB "
@@ -438,9 +439,10 @@ class Worker:
 
     def recalc(self, deadline: float | None = None) -> None:
         """Recálculo em lotes deixado por uma migration (ex.: pontuação 2.0)."""
-        from .recalc import run_pending
+        from .recalc import compact_if_needed, run_pending
 
         try:
+            compact_if_needed(self.s.database_url, self.s.db_size_limit_mb)
             budget = time.monotonic() + 40 * 60
             res = run_pending(self.s.database_url, db_size_limit_mb=self.s.db_size_limit_mb,
                               deadline=min(budget, deadline) if deadline else budget)

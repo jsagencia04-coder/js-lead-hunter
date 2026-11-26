@@ -142,3 +142,16 @@ def test_recalculo_em_lotes_retomavel(fresh_db, tmp_path):
     assert q(fresh_db, "select count(*) n from lead_insights")[0]["n"] == 5
     assert q(fresh_db, "select min(score) s from leads")[0]["s"] > 0
     assert run_pending(fresh_db) is None
+
+
+def test_compactacao_nao_remove_registros(fresh_db, tmp_path):
+    from lead_hunter.recalc import compact_if_needed
+
+    root = tmp_path / "rf"
+    assert _import(fresh_db, root, tmp_path)["status"] == "concluido"
+    antes = {t: q(fresh_db, f"select count(*) n from {t}")[0]["n"] for t in ("leads", "lead_events", "establishments", "companies")}
+    assert compact_if_needed(fresh_db, 0) is None          # sem limite configurado: não faz nada
+    res = compact_if_needed(fresh_db, 1)                    # banco "acima" do limite: compacta
+    assert res and "leads" in res["tabelas"]
+    depois = {t: q(fresh_db, f"select count(*) n from {t}")[0]["n"] for t in antes}
+    assert depois == antes
