@@ -30,6 +30,10 @@ def _setup_logging() -> None:
     console = logging.StreamHandler()
     console.setFormatter(fmt)
     root.addHandler(console)
+    # Uma linha por site verificado expõe domínios de empresas nos logs (públicos no
+    # GitHub Actions de repositório público). Só avisos e erros dessas bibliotecas.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         data_dir = Path(os.getenv("DATA_DIR") or (Path(__file__).resolve().parents[1] / "data"))
         (data_dir / "logs").mkdir(parents=True, exist_ok=True)

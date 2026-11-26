@@ -113,3 +113,23 @@ export interface DashboardMetrics {
   data_referencia: string | null
   ultimo_job: { job_type: string; status: string; created_at: string; finished_at: string | null; competence: string | null } | null
 }
+
+export interface PerformanceRow { label: string; leads: number; contatados: number; propostas: number; convertidos: number }
+
+export interface CommercialMetrics {
+  leads_total: number
+  leads_novos_competencia: number
+  leads_alta: number
+  leads_qualificados: number
+  leads_contatados: number
+  respostas_recebidas: number
+  propostas_enviadas: number
+  propostas_valor: number
+  propostas_aceitas: number
+  clientes_convertidos: number
+  taxa_conversao: number
+  follow_ups_atrasados: number
+  por_servico: PerformanceRow[]
+  por_responsavel: PerformanceRow[]
+  por_etapa: { label: string; total: number }[]
+}

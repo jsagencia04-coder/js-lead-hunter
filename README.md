@@ -30,11 +30,15 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 
 ## Funcionalidades
 
-- **Dashboard:** empresas encontradas e ativas, abertas nos últimos 7, 15, 30 e 90 dias, com telefone e com e-mail, além dos leads de alta prioridade, contatados e convertidos. Inclui gráficos por UF, município, CNAE, porte e mês de abertura, e mostra a competência vigente e o estado da coleta.
+- **Dashboard comercial:** leads novos na competência, alta prioridade, qualificados, contatados, respostas recebidas, propostas enviadas e aceitas, valor proposto, clientes convertidos, taxa de conversão, follow-ups atrasados, desempenho por serviço e por responsável.
+- **Dashboard da base:** empresas encontradas e ativas, abertas nos últimos 7, 15, 30 e 90 dias, com telefone e com e-mail, além dos leads de alta prioridade, contatados e convertidos. Inclui gráficos por UF, município, CNAE, porte e mês de abertura, e mostra a competência vigente e o estado da coleta.
 - **Mapa do Brasil:** os 27 estados coloridos por volume. Ao clicar num estado, aparecem os indicadores dele, a seleção de município e os leads com maior pontuação, além do botão para voltar à visão nacional.
 - **Pesquisa avançada:** todos os 16 filtros pedidos, paginação no servidor, pesquisas salvas (próprias ou compartilhadas) e exportação para Excel (CSV com `;` e UTF-8 com BOM).
 - **Inteligência comercial:** pontuação de 0 a 100 (alta de 70 a 100, média de 40 a 69, baixa de 0 a 39), com o detalhamento por critério. As recomendações de serviço seguem o CNAE, e pesos e regras são editáveis, com botão para recalcular todos os leads.
-- **CRM:** Kanban com as 10 etapas e arrastar e soltar. A ficha do lead traz dados cadastrais, recomendações, responsável, anotações, registro de contatos (telefone, WhatsApp, e-mail, presencial), agendamento e conclusão de follow-up, bloqueio para contato e o histórico completo, gravado automaticamente.
+- **CRM:** Kanban com as 10 etapas e arrastar e soltar. A ficha do lead traz dados cadastrais, recomendações, responsável, anotações, registro de contatos (telefone, WhatsApp, e-mail, presencial) e de **respostas recebidas**, agendamento e conclusão de follow-up, bloqueio para contato e o histórico completo, gravado automaticamente.
+- **Diagnóstico comercial individual:** oportunidades com recomendação e motivo verificável (ex.: domínio próprio sem site, empresa recém-aberta, segmento do CNAE) e ressalvas quando a verificação é inconclusiva. Nunca afirma ausência de site sem prova.
+- **Propostas e negociação:** registro de propostas com valor, validade e situação (rascunho, enviada, em negociação, aceita, recusada, expirada). Enviar ou negociar avança a etapa do lead (nunca retrocede).
+- **Abordagem sugerida:** modelos por serviço e segmento, preenchidos com os dados do lead. O usuário revisa e envia **manualmente, uma mensagem por vez** (WhatsApp ou e-mail); não há disparo em massa. Empresas bloqueadas não recebem sugestão.
 - **Central de importação:** competência vigente, estado do worker e das integrações, histórico de execuções (arquivos, registros lidos, novos leads, atualizações, erros, duração) com log detalhado, e botões para verificar nova competência e iniciar importação.
 - **Administração:** usuários e perfis (admin, gestor, comercial, leitura), convites, oposição ao contato, serviços, pesos de pontuação, regras por CNAE e auditoria.
 
@@ -58,9 +62,9 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 - **Não pontuam:**
   - e-mail genérico (Gmail, Hotmail etc.);
   - domínio usado por várias empresas ou de escritório de contabilidade (é o contador, não a empresa);
-  - servidor que recusa o acesso (403/429/5xx). Esse caso fica "inconclusivo" e é reverificado em 7 dias.
+  - servidor que recusa o acesso (403/429/5xx), demora ou não responde. Esse caso fica "inconclusivo" e é reverificado em 7 dias.
 - **Pontuam como oportunidade:**
-  - domínio próprio sem site no ar;
+  - domínio próprio que **não existe no DNS** (prova de que não há site nesse domínio);
   - página vazia ou estacionada.
 - **Site no ar:** preenche o campo *Site*.
 
@@ -73,7 +77,7 @@ A verificação acessa só a página inicial pública do domínio da própria em
 Para caber no plano do banco mês após mês, leads **sem nenhuma ação comercial** saem do banco operacional e ficam numa ficha resumida (`lead_archive`). Ação comercial é qualquer uma destas: etapa diferente de "Novo lead", responsável definido, follow-up, anotação ou contato.
 
 - **Rotina diária:** arquiva leads sem ação comercial com mais de 30 dias, ou 60 dias se forem de alta prioridade.
-- **Na importação:** se a competência nova não couber no banco, arquiva antes os leads sem ação comercial já existentes, exceto os de alta prioridade.
+- **Na importação:** se a competência nova não couber no banco, o worker **primeiro estima** quanto o arquivamento liberaria. Só arquiva se isso fizer a carga caber; caso contrário falha sem apagar nada (regressão de 17/11/2026, quando 69 mil leads foram arquivados e a carga falhou mesmo assim).
 - **Depois de arquivar:** o worker compacta as tabelas (`VACUUM FULL`) para o espaço voltar ao plano.
 - **Configuração e consulta:** as regras, a consulta e a exportação do arquivo ficam em *Administração → Arquivamento*.
 
@@ -86,7 +90,8 @@ Um lead é criado automaticamente quando o estabelecimento atende a todas estas 
 3. é a **matriz** (filiais podem entrar com `INCLUDE_BRANCHES=true`);
 4. a data de início de atividade é válida e está dentro da janela (`LEAD_WINDOW_DAYS`, padrão 90 dias);
 5. a empresa **não** está bloqueada para contato;
-6. a empresa ainda **não** tem lead (CNPJ básico único no CRM).
+6. a empresa ainda **não** tem lead (CNPJ básico único no CRM);
+7. a empresa **não** está no arquivo de leads (arquivar não faz o lead voltar como novo).
 
 Não são importados CPFs nem nomes de sócios.
 
@@ -217,6 +222,12 @@ O teste ponta a ponta do worker cobre:
 
 ## 5. Hospedagem (quando estiver 100%)
 
+**Situação em 25/11/2026:** banco no Supabase gratuito (≈447 MB de 500 MB, **sem backups automáticos**), worker no GitHub Actions de um repositório **público** e frontend no Netlify. Recomendações, em ordem:
+
+1. **Supabase Pro** (backups diários, 8 GB) e `DB_SIZE_LIMIT_MB=8000`. Sem isso, cada competência nova força arquivamento e não há como restaurar dados.
+2. **Worker na VPS** (Docker, abaixo), tirando o `DATABASE_URL` dos Secrets do GitHub: o segredo de administrador do banco deixa de depender de um repositório público, e a verificação de sites deixa de vir de IPs do GitHub (que muitos sites bloqueiam: ~90% das verificações recentes ficaram inconclusivas). Depois, desative o workflow *Worker de importação*.
+3. Se o código continuar no GitHub, torne o repositório **privado**.
+
 | Componente | Recomendação |
 |---|---|
 | Banco + Auth | Supabase Pro (região São Paulo), com backups diários. Ative o PITR se precisar restaurar para um ponto exato. |
@@ -227,6 +238,10 @@ O teste ponta a ponta do worker cobre:
 O worker só precisa de saída para a internet (Receita e Supabase). Nenhuma porta precisa ficar aberta.
 
 ## Segurança
+- **Cadastro só por convite:** quem se cadastra sozinho entra **inativo** e não lê nada até um administrador ativar. Convites pela Edge Function já entram ativos.
+- **Campos calculados protegidos:** pontuação, presença digital e origem do lead só mudam pelo worker ou por administrador.
+- **Logs sem dados de empresas:** as bibliotecas HTTP só registram avisos; os logs do GitHub Actions de repositório público são visíveis para qualquer pessoa.
+- **Vários workers ao mesmo tempo:** cada job em execução tem batimento (`heartbeat_at`). Outro worker só retoma um job sem batimento há mais de 20 minutos, e nunca roda dois jobs simultâneos.
 
 - **RLS em todas as tabelas**, sem acesso anônimo. Os papéis são verificados no banco, não só na tela.
 - **Dados cadastrais** só são gravados pelo worker. O cliente não escreve neles.

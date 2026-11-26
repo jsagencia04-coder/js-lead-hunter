@@ -28,7 +28,14 @@ def test_check_domain_classifica():
 
     assert check_domain("a.com.br", _client(real)).status == "site_ok"
     assert check_domain("a.com.br", _client(parked)).status == "site_fraco"
-    assert check_domain("a.com.br", _client(down)).status == "sem_site"
+    # sem resposta só vira "sem site" quando o DNS prova que o domínio não existe
+    assert check_domain("a.com.br", _client(down), resolver=lambda d: True).status == "sem_site"
+    assert check_domain("a.com.br", _client(down), resolver=lambda d: False).status == "inconclusivo"
+
+    def slow(req):
+        raise httpx.ReadTimeout("lento")
+
+    assert check_domain("a.com.br", _client(slow), resolver=lambda d: False).status == "inconclusivo"
     # bloqueio de robôs e erro de servidor não provam ausência de site
     assert check_domain("a.com.br", _client(lambda r: httpx.Response(403))).status == "inconclusivo"
     assert check_domain("a.com.br", _client(lambda r: httpx.Response(500))).status == "inconclusivo"

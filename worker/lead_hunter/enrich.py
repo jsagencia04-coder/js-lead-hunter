@@ -3,10 +3,11 @@
 Só conta como "oportunidade digital" o que foi efetivamente verificado:
 - e-mail em provedor genérico (gmail, hotmail...)  → sem_dominio_proprio (não pontua)
 - domínio usado por várias empresas (ex.: contador) → dominio_compartilhado (não pontua)
-- domínio próprio sem site respondendo              → sem_site    (pontua)
+- domínio próprio que não existe no DNS             → sem_site    (pontua)
 - domínio próprio com página vazia/estacionada      → site_fraco  (pontua)
 - domínio próprio com site no ar                    → site_ok     (preenche "site")
-- servidor recusou o acesso (403/429/5xx)           → inconclusivo (não pontua; nova tentativa em 7 dias)
+- servidor recusou o acesso (403/429/5xx), demorou ou
+  a conexão falhou sem prova de ausência            → inconclusivo (não pontua; nova tentativa em 7 dias)
 
 Acessa apenas a página inicial pública do domínio da própria empresa.
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -59,7 +61,26 @@ def domain_of(email: str | None) -> str | None:
     return d if re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", d) else None
 
 
-def check_domain(domain: str, client: httpx.Client) -> CheckResult:
+def dns_missing(domain: str) -> bool:
+    """True só quando o DNS responde que o nome não existe (nem com nem sem www).
+
+    Falha temporária de DNS, tempo esgotado ou recusa de conexão NÃO provam
+    ausência de site: nesses casos o resultado é inconclusivo.
+    """
+    for host in (domain, f"www.{domain}"):
+        try:
+            socket.getaddrinfo(host, 443)
+            return False
+        except socket.gaierror as exc:
+            if exc.errno not in (socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def check_domain(domain: str, client: httpx.Client,
+                 resolver: Callable[[str], bool] = dns_missing) -> CheckResult:
     """Tenta https://dominio, https://www.dominio e http://dominio.
 
     Bloqueio de robôs (403, 429) e erros do servidor (5xx) não provam ausência
@@ -86,7 +107,9 @@ def check_domain(domain: str, client: httpx.Client) -> CheckResult:
                            ",".join(str(c) for c in sorted(set(statuses))))
     if statuses:  # só 404/410 etc.: há hospedagem, mas nenhuma página publicada
         return CheckResult("site_fraco", statuses[-1], None, "domínio sem página publicada")
-    return CheckResult("sem_site", None, None, last_error or "sem resposta")
+    if resolver(domain):
+        return CheckResult("sem_site", None, None, "domínio não existe no DNS")
+    return CheckResult("inconclusivo", None, None, f"sem resposta do servidor ({last_error or 'desconhecido'})")
 
 
 class Enricher:

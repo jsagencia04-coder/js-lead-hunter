@@ -74,7 +74,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '22333444'")
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '55666777'")
     # recomendações geradas e auditoria sem poluição
-    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 14
+    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 20  # inclui redes sociais, catálogo e materiais gráficos (migration 011)
     assert q(fresh_db, "select count(*) n from audit_logs where table_name in ('leads','establishments')")[0]["n"] == 0
     # UF do município derivada dos estabelecimentos
     assert q(fresh_db, "select uf from municipalities where code = '6001'")[0]["uf"] == "RJ"
@@ -163,8 +163,13 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
     assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 10
+    assert len(q(fresh_db, "select * from app_migrations")) == 11
+    # cópia de segurança dos dados comerciais antes de aplicar
+    schemas = q(fresh_db, "select nspname from pg_namespace where nspname like 'backup_%%'")
+    assert len(schemas) == 1
+    assert q(fresh_db, f'select count(*) n from "{schemas[0]["nspname"]}".scoring_rules')[0]["n"] > 0
     assert migrate(fresh_db) == []
+    assert len(q(fresh_db, "select nspname from pg_namespace where nspname like 'backup_%%'")) == 1
 
 
 def test_migrate_em_banco_vazio(tmp_path):
@@ -188,7 +193,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 10
+        assert len(migrate(url)) == 11
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:
@@ -257,20 +262,58 @@ def test_arquivamento_preserva_leads_trabalhados(fresh_db, tmp_path):
     assert run_scheduled(fresh_db) is None
 
 
-def test_importacao_libera_espaco_arquivando(fresh_db, tmp_path):
+def test_importacao_libera_espaco_arquivando(fresh_db, tmp_path, monkeypatch):
+    import lead_hunter.jobs as jobs
+
     root = tmp_path / "rf"
     build_competence(root, "2026-10")
     with FakeRF(root) as rf:
         assert run_import(make_worker(fresh_db, rf.url, tmp_path))["status"] == "concluido"
         build_competence(root, "2026-11", extra_est=[est_row("77888999", fantasia="NOVA")])
+        # arquivar resolveria (estimativa alta de espaço liberado): arquiva antes de decidir
+        monkeypatch.setattr(jobs, "FREED_BYTES_PER_LEAD", 10 ** 12)
         w = make_worker(fresh_db, rf.url, tmp_path)
-        # limite abaixo do tamanho atual: força o arquivamento antes de decidir se grava
         size_mb = q(fresh_db, "select pg_database_size(current_database()) / 1048576 as m")[0]["m"]
         object.__setattr__(w.s, "db_size_limit_mb", int(size_mb))
         job = run_import(w, "2026-11")
-    # leads sem contato da competência anterior foram arquivados (fichas preservadas)
     assert q(fresh_db, "select count(*) n from lead_archive where motivo like 'liberar espaço%%'")[0]["n"] >= 1
     if job["status"] == "falhou":  # banco de teste minúsculo pode continuar acima do limite
         assert "Espaço insuficiente" in job["errors"][-1]["msg"]
     else:
         assert q(fresh_db, "select 1 from leads where cnpj_basico = '77888999'")
+
+
+def test_sem_espaco_mesmo_arquivando_nao_apaga_nada(fresh_db, tmp_path):
+    """Regressão de 17/11/2026: arquivou 69 mil leads e a importação falhou mesmo assim."""
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        assert run_import(make_worker(fresh_db, rf.url, tmp_path))["status"] == "concluido"
+        antes = q(fresh_db, "select count(*) n from leads")[0]["n"]
+        build_competence(root, "2026-11", extra_est=[est_row("77888999", fantasia="NOVA")])
+        w = make_worker(fresh_db, rf.url, tmp_path)
+        object.__setattr__(w.s, "db_size_limit_mb", 1)
+        job = run_import(w, "2026-11")
+    assert job["status"] == "falhou"
+    assert q(fresh_db, "select count(*) n from leads")[0]["n"] == antes
+    assert q(fresh_db, "select count(*) n from lead_archive")[0]["n"] == 0
+
+
+def test_dois_workers_nao_roubam_job_em_execucao(fresh_db, tmp_path):
+    root = tmp_path / "rf"
+    build_competence(root, "2026-10")
+    with FakeRF(root) as rf:
+        a = make_worker(fresh_db, rf.url, tmp_path)
+        b = make_worker(fresh_db, rf.url, tmp_path)
+        a.enqueue("importacao", "manual")
+        job = a.claim()
+        assert job and job["heartbeat_at"] is not None
+        # o outro worker (ex.: GitHub Actions) começa uma rodada enquanto o primeiro trabalha
+        b.recover_stale_jobs(resume=True)
+        assert q(fresh_db, "select status from import_jobs where id = %s", job["id"])[0]["status"] == "processando"
+        b.enqueue("verificacao")
+        assert b.claim() is None  # não roda dois jobs ao mesmo tempo
+        # sem batimento há mais de 20 min: aí sim é retomado
+        q(fresh_db, "update import_jobs set heartbeat_at = now() - interval '30 minutes' where id = %s returning 1", job["id"])
+        b.recover_stale_jobs(resume=True)
+        assert q(fresh_db, "select status from import_jobs where id = %s", job["id"])[0]["status"] == "pendente"

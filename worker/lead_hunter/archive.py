@@ -22,6 +22,11 @@ def load_settings(conn: psycopg.Connection) -> dict:
     return {**defaults, **(row[0] if row else {})}
 
 
+def archive_settings(database_url: str) -> dict:
+    with psycopg.connect(database_url, autocommit=True) as c:
+        return load_settings(c)
+
+
 def _archive(database_url: str, dias: int, dias_alta: int, motivo: str,
              somente_anteriores: bool, incluir_alta: bool) -> dict:
     with psycopg.connect(database_url) as c:

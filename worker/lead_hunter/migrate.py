@@ -26,7 +26,44 @@ MARKERS = {
     "20261116000008": "select false",
     "20261116000010": "select to_regclass('public.lead_archive') is not null",
     "20261116000009": "select exists (select 1 from public.scoring_rules where key = 'cnae_compativel' and points = 35)",
+    "20261125000011": "select to_regclass('public.lead_proposals') is not null",
 }
+
+
+# Dados criados pelas pessoas (não recuperáveis da Receita). Pequenos: cabem no
+# plano gratuito. Leads entram só se tiverem alguma ação comercial.
+BACKUP_TABLES = {
+    "profiles": "true",
+    "leads": "stage <> 'novo' or owner_id is not null or next_follow_up_at is not null or website is not null",
+    "lead_events": "event_type not in ('criado', 'pontuacao_alterada')",
+    "lead_proposals": "true",
+    "lead_searches": "true",
+    "contact_suppressions": "true",
+    "service_catalog": "true",
+    "cnae_service_rules": "true",
+    "scoring_rules": "true",
+    "message_templates": "true",
+    "app_settings": "true",
+}
+
+
+def backup_commercial_data(c: psycopg.Connection, label: str) -> str:
+    """Cópia de segurança dos dados comerciais num esquema próprio, antes de migrations.
+
+    O esquema não é exposto pela API do Supabase (só `public` é) e fica sem acesso
+    para anon/authenticated. Restaurar: copiar as linhas de volta com INSERT ... SELECT.
+    """
+    from datetime import datetime, timezone
+
+    schema = "backup_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M") + "_" + label
+    c.execute(f'create schema if not exists "{schema}"')
+    c.execute(f'revoke all on schema "{schema}" from public')
+    for table, where in BACKUP_TABLES.items():
+        if not c.execute("select to_regclass(%s) is not null", (f"public.{table}",)).fetchone()[0]:
+            continue
+        c.execute(f'create table "{schema}".{table} as select * from public.{table} where {where}')
+    log.info("Cópia de segurança dos dados comerciais em %s", schema)
+    return schema
 
 
 def default_dir() -> Path:
@@ -57,10 +94,12 @@ def migrate(database_url: str, directory: Path | None = None) -> list[str]:
                     applied.add(version)
                     log.info("Migration já presente no banco: %s", f.name)
 
-        for f in files:
+        pending = [f for f in files if f.name.split("_", 1)[0] not in applied]
+        if pending and c.execute("select to_regclass('public.leads') is not null").fetchone()[0]:
+            backup_commercial_data(c, "pre_" + pending[0].name.split("_", 1)[0])
+
+        for f in pending:
             version = f.name.split("_", 1)[0]
-            if version in applied:
-                continue
             log.info("Aplicando migration %s", f.name)
             with c.transaction():
                 c.execute(f.read_text(encoding="utf-8"))

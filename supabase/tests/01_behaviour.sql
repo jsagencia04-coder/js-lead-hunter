@@ -81,7 +81,7 @@ select pg_temp.assert((select score = 59 from leads where cnpj_basico = '1122233
 select pg_temp.assert((select priority = 'media' from leads where cnpj_basico = '11222333'), 'prioridade média sem oportunidade digital');
 -- publicidade (CNAE 73), 60 dias: recência 8 + e-mail 5 + porte 8 + CNAE 85% de 35 = 51
 select pg_temp.assert((select score = 51 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (51)');
-select pg_temp.assert((select count(*) = 8 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
+select pg_temp.assert((select count(*) = 10 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
 select pg_temp.assert((select count(*) = 0 from audit_logs where table_name = 'leads'), 'carga em massa não gera auditoria linha a linha');
 select pg_temp.assert((select count(*) = 2 from lead_events where event_type = 'criado'), 'histórico registra criação');
 
@@ -129,4 +129,99 @@ select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111
 select pg_temp.assert((dashboard_metrics() ->> 'data_referencia')::date = current_date - 30, 'dashboard usa a data de referência da base');
 select pg_temp.assert((select count(*) from map_state_counts(7)) = 1, 'mapa usa a data de referência da base');
 select pg_temp.assert((admin_recalculate_leads() ->> 'recomendacoes')::int >= 0, 'recálculo com data de referência');
+reset role;
+
+-- =====================================================================
+-- Migration 011 — operação comercial
+-- =====================================================================
+select pg_temp.assert((select not active from profiles where email = 'vendas@teste.local'),
+  'usuário que se cadastra sozinho entra inativo');
+
+-- Comercial ativo
+insert into auth.users (id, email) values ('33333333-3333-3333-3333-333333333333', 'comercial@teste.local');
+update profiles set role = 'comercial', active = true where email = 'comercial@teste.local';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333', false);
+select pg_temp.expect_error($$update leads set score = 100 where cnpj_basico = '12ABC345'$$, 'comercial alterar pontuação');
+select pg_temp.expect_error($$update leads set digital_presence = '{"status":"sem_site"}' where cnpj_basico = '12ABC345'$$,
+  'comercial forjar presença digital');
+update leads set stage = 'primeiro_contato', website = 'https://exemplo.local' where cnpj_basico = '12ABC345';
+select pg_temp.assert((select stage = 'primeiro_contato' from leads where cnpj_basico = '12ABC345'), 'comercial move etapa e edita site');
+
+-- Resposta recebida e proposta
+insert into lead_events (lead_id, event_type, channel, content, actor_id)
+select id, 'resposta_recebida', 'whatsapp', 'Pediu orçamento', auth.uid() from leads where cnpj_basico = '12ABC345';
+insert into lead_proposals (lead_id, title, amount, status, created_by)
+select id, 'Site institucional', 2500, 'enviada', auth.uid() from leads where cnpj_basico = '12ABC345';
+select pg_temp.assert((select stage = 'proposta_enviada' from leads where cnpj_basico = '12ABC345'),
+  'proposta enviada avança a etapa');
+select pg_temp.assert((select sent_at is not null from lead_proposals limit 1), 'data de envio registrada');
+select pg_temp.assert((select count(*) = 1 from lead_events where event_type = 'proposta'), 'proposta registrada no histórico');
+update lead_proposals set status = 'em_negociacao';
+select pg_temp.assert((select stage = 'em_negociacao' from leads where cnpj_basico = '12ABC345'), 'negociação avança a etapa');
+update leads set stage = 'convertido' where cnpj_basico = '12ABC345';
+update lead_proposals set status = 'aceita';
+select pg_temp.assert((select stage = 'convertido' and converted_at is not null from leads where cnpj_basico = '12ABC345'),
+  'proposta não rebaixa lead convertido');
+select pg_temp.assert((select decided_at is not null from lead_proposals limit 1), 'data de decisão registrada');
+delete from lead_proposals;
+select pg_temp.assert((select count(*) = 1 from lead_proposals), 'comercial não exclui proposta (só admin)');
+
+-- Indicadores comerciais
+select pg_temp.assert((commercial_metrics() ->> 'propostas_enviadas')::int = 1, 'indicador: propostas enviadas');
+select pg_temp.assert((commercial_metrics() ->> 'respostas_recebidas')::int >= 1, 'indicador: respostas recebidas');
+select pg_temp.assert((commercial_metrics() ->> 'clientes_convertidos')::int = 1, 'indicador: convertidos');
+select pg_temp.assert((commercial_metrics() ->> 'taxa_conversao')::numeric = 50.0, 'indicador: taxa de conversão (1 de 2 contatados)');
+select pg_temp.assert(jsonb_array_length(commercial_metrics() -> 'por_servico') >= 1, 'indicador: desempenho por serviço');
+select pg_temp.assert(jsonb_array_length(commercial_metrics() -> 'por_responsavel') >= 1, 'indicador: desempenho por responsável');
+
+-- Diagnóstico individual
+select pg_temp.assert(
+  (select bool_or(o ->> 'tipo' = 'site') from jsonb_array_elements(
+     lead_diagnosis((select id from leads where cnpj_basico = '11222333')) -> 'oportunidades') o),
+  'diagnóstico aponta site quando a ausência foi verificada');
+select pg_temp.assert(
+  (select not coalesce(bool_or(o ->> 'tipo' = 'site'), false) from jsonb_array_elements(
+     lead_diagnosis((select id from leads where cnpj_basico = '12ABC345')) -> 'oportunidades') o),
+  'diagnóstico não afirma ausência de site sem verificação');
+select pg_temp.assert(
+  (select reason like 'Verificado:%' from lead_recommendations lr join service_catalog s on s.id = lr.service_id
+    join leads l on l.id = lr.lead_id where s.code = 'site_institucional' and l.cnpj_basico = '11222333'),
+  'recomendação de site registra o motivo verificado');
+reset role;
+
+-- Bloqueio impede registrar contato
+set role authenticated;
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+insert into contact_suppressions (cnpj_basico, reason, created_by) values ('11222333', 'pediu para não ser contatado', auth.uid());
+select pg_temp.expect_error(
+  $$insert into lead_events (lead_id, event_type, channel, content, actor_id)
+    select id, 'contato', 'telefone', 'x', auth.uid() from leads where cnpj_basico = '11222333'$$,
+  'registrar contato com empresa bloqueada');
+reset role;
+
+-- Empresa arquivada não volta como lead novo
+insert into companies (cnpj_basico, razao_social) values ('44555666', 'EMPRESA TESTE ARQUIVADA');
+do $$
+declare base text := '445556660001'; s int := 0; d1 int; d2 int; w1 int[] := array[5,4,3,2,9,8,7,6,5,4,3,2];
+        w2 int[] := array[6,5,4,3,2,9,8,7,6,5,4,3,2]; i int;
+begin
+  for i in 1..12 loop s := s + (ascii(substr(base, i, 1)) - 48) * w1[i]; end loop;
+  d1 := case when s % 11 < 2 then 0 else 11 - s % 11 end; s := 0;
+  for i in 1..12 loop s := s + (ascii(substr(base, i, 1)) - 48) * w2[i]; end loop;
+  s := s + d1 * 2; d2 := case when s % 11 < 2 then 0 else 11 - s % 11 end;
+  insert into establishments (cnpj, cnpj_basico, cnpj_ordem, cnpj_dv, identificador_matriz, situacao_cadastral,
+                              data_inicio_atividade, cnae_principal, uf, municipio_code, source_competence)
+  values (base || d1 || d2, '44555666', '0001', d1::text || d2::text, 1, '02', current_date - 3, '4781400', 'SP', '7107', '2026-11');
+end $$;
+insert into lead_archive (cnpj, cnpj_basico, razao_social, motivo) values ('44555666000100', '44555666', 'EMPRESA TESTE ARQUIVADA', 'teste');
+set role service_role;
+select pg_temp.assert(
+  worker_create_leads('aaaaaaaa-0000-0000-0000-000000000001', current_date - 90, current_date) = 0,
+  'empresa arquivada não é recriada como lead (sem duplicidade)');
+delete from lead_archive where cnpj_basico = '44555666';
+select pg_temp.assert(
+  worker_create_leads('aaaaaaaa-0000-0000-0000-000000000001', current_date - 90, current_date) = 1,
+  'mesma empresa vira lead quando não está no arquivo');
+select pg_temp.assert(archive_candidates_count(true) >= 1, 'estimativa de arquivamento sem apagar nada');
 reset role;

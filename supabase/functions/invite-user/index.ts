@@ -51,7 +51,7 @@ Deno.serve(async (req) => {
 
   const { error: profErr } = await admin
     .from('profiles')
-    .update({ role, full_name: fullName })
+    .update({ role, full_name: fullName, active: true })
     .eq('id', invited.user.id)
   if (profErr) return json({ error: `Usuário convidado, mas o perfil não foi ajustado: ${profErr.message}` }, 500)
 

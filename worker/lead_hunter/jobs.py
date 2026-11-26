@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,12 @@ from .transform import prepare
 log = logging.getLogger(__name__)
 
 ACTIVE = ("baixando", "processando", "validando")
+# Um job em execução sem batimento há mais que isso é considerado abandonado
+STALE_MINUTES = 20
+# Estimativas de espaço no banco (bytes), medidas na produção em nov/2026:
+# ~4 KB por estabelecimento novo gravado; ~3,6 KB liberados por lead arquivado.
+EST_BYTES = 4096
+FREED_BYTES_PER_LEAD = 3000
 
 
 class JobFailed(RuntimeError):
@@ -45,6 +52,31 @@ class Worker:
     def close(self):
         self.source.close()
         self.state.close()
+
+    def _job_heartbeat(self, job_id: str) -> tuple[threading.Event, threading.Thread]:
+        """Batimento do job em execução (conexão própria), mesmo durante downloads longos.
+
+        Outro worker (ex.: GitHub Actions e um PC ao mesmo tempo) só retoma um job
+        se o batimento parar por mais de STALE_MINUTES.
+        """
+        stop = threading.Event()
+        host = socket.gethostname()
+
+        def beat():
+            try:
+                with psycopg.connect(self.s.database_url, autocommit=True,
+                                     application_name="js-lead-hunter-heartbeat") as c:
+                    while True:
+                        c.execute("UPDATE public.import_jobs SET heartbeat_at = now(), worker_host = %s WHERE id = %s",
+                                  (host, job_id))
+                        if stop.wait(60):
+                            return
+            except Exception:  # noqa: BLE001 — o batimento nunca derruba o job
+                log.warning("Batimento do job %s interrompido", job_id, exc_info=True)
+
+        t = threading.Thread(target=beat, name=f"heartbeat-{job_id[:8]}", daemon=True)
+        t.start()
+        return stop, t
 
     # ------------------------------------------------------------ estado
     def heartbeat(self, extra: dict | None = None):
@@ -81,26 +113,39 @@ class Worker:
         resume=True (modo agendado): voltam para 'pendente' e continuam na próxima execução.
         resume=False: são marcados como falha.
         """
+        stale = ("status IN ('baixando', 'processando', 'validando') "
+                 "AND coalesce(heartbeat_at, started_at, created_at) < now() - make_interval(mins => %s)")
         if resume:
             rows = self.state.execute(
-                """UPDATE public.import_jobs SET status = 'pendente',
-                          log = log || '[{"nivel": "aviso", "msg": "Execução anterior interrompida; retomando"}]'::jsonb
-                    WHERE status IN ('baixando', 'processando', 'validando') RETURNING id""").fetchall()
+                f"""UPDATE public.import_jobs SET status = 'pendente',
+                          log = log || '[{{"nivel": "aviso", "msg": "Execução anterior interrompida; retomando"}}]'::jsonb
+                    WHERE {stale} RETURNING id""", (STALE_MINUTES,)).fetchall()
         else:
             rows = self.state.execute(
-                """UPDATE public.import_jobs SET status = 'falhou', finished_at = now(),
+                f"""UPDATE public.import_jobs SET status = 'falhou', finished_at = now(),
                           error_count = error_count + 1,
-                          errors = errors || '[{"msg": "Worker reiniciado durante a execução"}]'::jsonb
-                    WHERE status IN ('baixando', 'processando', 'validando') RETURNING id""").fetchall()
+                          errors = errors || '[{{"msg": "Worker interrompido durante a execução"}}]'::jsonb
+                    WHERE {stale} RETURNING id""", (STALE_MINUTES,)).fetchall()
         for r in rows:
             log.warning("Job %s interrompido anteriormente (%s)", r["id"], "retomado" if resume else "falhou")
 
     def claim(self) -> dict | None:
+        try:
+            return self._claim()
+        except psycopg.errors.UniqueViolation:
+            # outro worker começou um job no mesmo instante (índice import_jobs_single_running)
+            log.info("Outro worker já está executando um job; nada a fazer agora")
+            return None
+
+    def _claim(self) -> dict | None:
         return self.state.execute(
-            """UPDATE public.import_jobs SET status = 'processando', started_at = now()
+            """UPDATE public.import_jobs SET status = 'processando', started_at = now(),
+                      heartbeat_at = now(), worker_host = %s
                 WHERE id = (SELECT id FROM public.import_jobs WHERE status = 'pendente'
                              ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-            RETURNING *""").fetchone()
+                  AND NOT EXISTS (SELECT 1 FROM public.import_jobs
+                                   WHERE status IN ('baixando', 'processando', 'validando'))
+            RETURNING *""", (socket.gethostname(),)).fetchone()
 
     def current_competence(self) -> str | None:
         r = self.state.execute("SELECT competence FROM public.import_jobs WHERE is_current").fetchone()
@@ -115,6 +160,7 @@ class Worker:
     # ------------------------------------------------------------ execução
     def run_job(self, job: dict):
         job_id = str(job["id"])
+        stop, beat = self._job_heartbeat(job_id)
         try:
             if job["job_type"] == "verificacao":
                 self._run_check(job_id)
@@ -131,6 +177,9 @@ class Worker:
                     WHERE id = %s""",
                 (json.dumps([{"em": datetime.now(timezone.utc).isoformat(), "msg": str(exc)[:2000]}]), job_id))
             self._log(job_id, f"Falha: {exc}", "erro")
+        finally:
+            stop.set()
+            beat.join(timeout=5)
 
     def _run_check(self, job_id: str):
         self._log(job_id, "Consultando competências publicadas pela Receita Federal")
@@ -243,18 +292,30 @@ class Worker:
         # (estabelecimento + empresa + lead + histórico + recomendações + índices)
         if self.s.db_size_limit_mb:
             current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
-            projected = current + data.establishments * 4096
+            projected = current + data.establishments * EST_BYTES
             limit = self.s.db_size_limit_mb * 1024 * 1024 * 0.95
             if projected > limit:
-                from .archive import free_space_for_import
+                # Antes de apagar qualquer coisa, estima se o arquivamento resolveria.
+                # Se não resolver, falha SEM arquivar (em 17/11 foram arquivados 69 mil
+                # leads e a importação falhou mesmo assim).
+                from .archive import archive_settings, free_space_for_import
 
+                cfg = archive_settings(self.s.database_url)
+                candidates = self.state.execute(
+                    "select public.archive_candidates_count(false) as n").fetchone()["n"]
+                after_archive = projected - candidates * FREED_BYTES_PER_LEAD
                 self._log(job_id, f"Banco com {current / 1e6:.0f} MB; previsto {projected / 1e6:.0f} MB. "
-                                  "Arquivando leads sem contato de competências anteriores para liberar espaço")
-                res = free_space_for_import(self.s.database_url)
-                if res:
-                    self._log(job_id, f"Arquivados: {res.get('leads', 0)} leads sem contato")
-                current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
-                projected = current + data.establishments * 4096
+                                  f"{candidates} leads sem contato poderiam ser arquivados "
+                                  f"(previsão após arquivar: {after_archive / 1e6:.0f} MB)")
+                if (cfg["ativo"] and cfg["liberar_espaco_na_importacao"] and candidates
+                        and after_archive <= limit):
+                    res = free_space_for_import(self.s.database_url)
+                    if res:
+                        self._log(job_id, f"Arquivados: {res.get('leads', 0)} leads sem contato")
+                    current = self.state.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
+                    projected = current + data.establishments * EST_BYTES
+                elif candidates:
+                    self._log(job_id, "Arquivar não liberaria espaço suficiente: nenhum lead foi arquivado", "aviso")
             self._log(job_id, f"Banco: {current / 1e6:.0f} MB; previsto após a carga: {projected / 1e6:.0f} MB "
                               f"(limite {self.s.db_size_limit_mb} MB)")
             if projected > limit:

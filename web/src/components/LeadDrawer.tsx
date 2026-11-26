@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import { Alert } from '@/components/ui/alert'
+import { ApproachSection, DiagnosisSection, ProposalsSection, type Diagnosis } from '@/components/LeadCommercial'
 
 interface LeadDetail extends LeadRow {
   owner_id: string | null
@@ -39,6 +40,7 @@ interface LeadEvent {
 
 const EVENT_LABEL: Record<string, string> = {
   criado: 'Lead criado', mudanca_etapa: 'Mudança de etapa', anotacao: 'Anotação', contato: 'Contato registrado',
+  resposta_recebida: 'Resposta recebida', proposta: 'Proposta',
   follow_up_agendado: 'Follow-up agendado', follow_up_concluido: 'Follow-up concluído',
   responsavel_alterado: 'Responsável alterado', pontuacao_alterada: 'Pontuação alterada', bloqueado: 'Bloqueado para contato',
 }
@@ -52,6 +54,7 @@ const DIGITAL: Record<string, string> = {
   site_ok: 'Site no ar',
   sem_dominio_proprio: 'Usa e-mail genérico (sem domínio próprio)',
   dominio_compartilhado: 'E-mail de terceiro (ex.: contador)',
+  inconclusivo: 'Verificação inconclusiva (o site não respondeu ou bloqueou a consulta)',
 }
 const SITUACAO: Record<string, string> = { '01': 'Nula', '02': 'Ativa', '03': 'Suspensa', '04': 'Inapta', '08': 'Baixada' }
 
@@ -67,6 +70,8 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [suppressed, setSuppressed] = useState(false)
+  const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null)
+  const [contactKind, setContactKind] = useState<'contato' | 'resposta_recebida'>('contato')
 
   const [note, setNote] = useState('')
   const [channel, setChannel] = useState('telefone')
@@ -79,18 +84,20 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
   const load = useCallback(async () => {
     if (!leadId) return
     setError(null)
-    const [l, x, r, e, p] = await Promise.all([
+    const [l, x, r, e, p, d] = await Promise.all([
       supabase.from('lead_list_v').select('*').eq('id', leadId).single(),
       supabase.from('leads').select('score_breakdown,digital_presence,lost_reason,converted_at').eq('id', leadId).single(),
       supabase.from('lead_recommendations').select('relevance,reason,service_catalog(name)').eq('lead_id', leadId).order('relevance', { ascending: false }),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       supabase.from('profiles').select('id,full_name,email').eq('active', true).order('full_name'),
+      supabase.rpc('lead_diagnosis', { p_lead_id: leadId }),
     ])
     const err = l.error ?? x.error ?? r.error ?? e.error
     if (err) setError(err.message)
     const detail = l.data as LeadDetail | null
     setLead(detail)
     setExtra(x.data as LeadExtra | null)
+    setDiagnosis((d.data as Diagnosis | null) ?? null)
     setRecs((r.data as unknown as Recommendation[]) ?? [])
     setEvents((e.data as LeadEvent[]) ?? [])
     setOwners(p.data ?? [])
@@ -120,12 +127,12 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
 
   const updateLead = (patch: Record<string, unknown>) => run(() => supabase.from('leads').update(patch).eq('id', leadId))
 
-  async function addEvent(e: FormEvent, type: 'anotacao' | 'contato') {
+  async function addEvent(e: FormEvent, type: 'anotacao' | 'contato' | 'resposta_recebida') {
     e.preventDefault()
     const content = type === 'anotacao' ? note.trim() : contact.trim()
     if (!content) return
     const ok = await run(() => supabase.from('lead_events').insert({
-      lead_id: leadId, event_type: type, content, channel: type === 'contato' ? channel : null, actor_id: profile!.id,
+      lead_id: leadId, event_type: type, content, channel: type === 'anotacao' ? null : channel, actor_id: profile!.id,
     }))
     if (ok) { setNote(''); setContact('') }
   }
@@ -239,6 +246,20 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
               </div>
             </Section>
 
+            <Section title="Diagnóstico comercial">
+              <DiagnosisSection diagnosis={diagnosis} />
+            </Section>
+
+            <Section title="Abordagem sugerida">
+              <ApproachSection lead={lead} diagnosis={diagnosis} dominio={extra?.digital_presence?.dominio ?? null}
+                suppressed={suppressed} canEdit={canEdit} userName={profile?.full_name ?? null} userId={profile!.id}
+                leadId={leadId} onChanged={() => { load(); onChanged?.() }} />
+            </Section>
+
+            <Section title="Propostas e negociação">
+              <ProposalsSection leadId={leadId} canEdit={canEdit} userId={profile!.id} onChanged={() => { load(); onChanged?.() }} />
+            </Section>
+
             {canEdit && (
               <Section title="Gestão comercial">
                 <div className="grid gap-3 md:grid-cols-2">
@@ -283,7 +304,11 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
                   </div>
                 </div>
 
-                <form onSubmit={(e) => addEvent(e, 'contato')} className="mt-4 grid gap-2 md:grid-cols-[9rem_1fr_auto]">
+                <form onSubmit={(e) => addEvent(e, contactKind)} className="mt-4 grid gap-2 md:grid-cols-[11rem_9rem_1fr_auto]">
+                  <Select value={contactKind} onChange={(e) => setContactKind(e.target.value as 'contato' | 'resposta_recebida')} aria-label="Tipo">
+                    <option value="contato">Contato feito</option>
+                    <option value="resposta_recebida">Resposta recebida</option>
+                  </Select>
                   <Select value={channel} onChange={(e) => setChannel(e.target.value)} aria-label="Canal">
                     <option value="telefone">Telefone</option>
                     <option value="whatsapp">WhatsApp</option>
@@ -292,7 +317,7 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
                     <option value="outro">Outro</option>
                   </Select>
                   <Input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Resumo do contato" />
-                  <Button type="submit" disabled={busy || suppressed || !contact.trim()}><PhoneCall className="h-4 w-4" /> Registrar contato</Button>
+                  <Button type="submit" disabled={busy || suppressed || !contact.trim()}><PhoneCall className="h-4 w-4" /> Registrar</Button>
                 </form>
                 <form onSubmit={(e) => addEvent(e, 'anotacao')} className="mt-2 flex gap-2">
                   <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Nova anotação" />
