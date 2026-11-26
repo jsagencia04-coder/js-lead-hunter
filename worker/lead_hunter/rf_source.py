@@ -248,9 +248,25 @@ class RFSource:
         h = self.client.head(url)
         return int(h.headers["content-length"]) if h.status_code == 200 and "content-length" in h.headers else None
 
-    def _supports_range(self, url: str) -> bool:
-        r = self.client.get(url, headers={"Range": "bytes=0-0"})
-        return r.status_code == 206
+    def _supports_range(self, url: str, attempts: int = 4) -> bool:
+        """Testa o download em partes SEM ler o corpo da resposta.
+
+        Em 26/11/2026 o servidor da Receita ignorou o Range, começou a enviar o
+        arquivo inteiro e derrubou a conexão: o teste agora abre em streaming,
+        olha só o status e fecha, com novas tentativas para falhas passageiras.
+        """
+        delay = 2.0
+        for attempt in range(1, attempts + 1):
+            try:
+                with self.client.stream("GET", url, headers={"Range": "bytes=0-0"}) as r:
+                    return r.status_code == 206
+            except httpx.HTTPError:
+                if attempt == attempts:
+                    raise
+                log.warning("Falha ao testar download em partes (tentativa %d de %d)", attempt, attempts)
+                time.sleep(delay)
+                delay *= 2
+        return False
 
     def _get_range(self, url: str, start: int, end: int, fh, lock: threading.Lock, attempts: int = 6) -> None:
         delay = 2.0
