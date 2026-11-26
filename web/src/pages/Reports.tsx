@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Download, Loader2, Plus, RefreshCw } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { friendlyError, readCache, writeCache } from '@/lib/cache'
 import { brl, nf, UFS } from '@/lib/utils'
 import { downloadCsv } from '@/lib/crm'
 import { useAuth } from '@/hooks/useAuth'
@@ -60,7 +61,7 @@ export default function Reports() {
   const [uf, setUf] = useState('')
   const [from, setFrom] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10))
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10))
-  const [data, setData] = useState<Executive | null>(null)
+  const [data, setData] = useState<Executive | null>(() => readCache<Executive>('relatorios')?.data ?? null)
   const [goals, setGoals] = useState<{ goal_id: string; owner_name: string; metric: string; target: number; realizado: number }[]>([])
   const [owners, setOwners] = useState<{ id: string; full_name: string | null; email: string }[]>([])
   const [g, setG] = useState({ owner: '', metric: 'receita_contratada', target: '' })
@@ -74,8 +75,8 @@ export default function Reports() {
       supabase.rpc('goals_progress', { p_month: from.slice(0, 8) + '01' }),
       supabase.from('profiles').select('id,full_name,email').eq('active', true).order('full_name'),
     ])
-    if (e.error || gp.error) setError((e.error ?? gp.error)!.message)
-    setData(e.data as Executive)
+    if (e.error || gp.error) setError(friendlyError((e.error ?? gp.error)!.message))
+    if (!e.error) { setData(e.data as Executive); writeCache('relatorios', e.data) }
     setGoals((gp.data as typeof goals) ?? [])
     setOwners(o.data ?? [])
     setLoading(false)

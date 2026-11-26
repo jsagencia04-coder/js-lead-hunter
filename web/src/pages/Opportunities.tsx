@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BookmarkPlus, ChevronLeft, ChevronRight, Download, KanbanSquare, Loader2, Search, Shuffle, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { readCache, useCachedQuery, writeCache } from '@/lib/cache'
+import { DataStatus } from '@/components/DataStatus'
 import { formatCnpj, nf, PORTE_LABEL, UFS } from '@/lib/utils'
 import { CHANNEL_STATUS, downloadCsv, PRIORITY_VARIANT, useOpenLead } from '@/lib/crm'
 import { useAuth } from '@/hooks/useAuth'
@@ -74,19 +76,17 @@ export default function Opportunities() {
   const openLead = useOpenLead()
   const canEdit = hasRole('admin', 'gestor', 'comercial')
   const canDistribute = hasRole('admin', 'gestor')
-  const [f, setF] = useState<F>(EMPTY)
-  const [applied, setApplied] = useState<F>(EMPTY)
-  const [group, setGroup] = useState('servico')
-  const [groups, setGroups] = useState<{ chave: string; rotulo: string; total: number; alta: number }[]>([])
-  const [rows, setRows] = useState<Row[]>([])
-  const [count, setCount] = useState(0)
-  const [page, setPage] = useState(0)
+  // filtros, página e agrupamento ficam salvos: atualizar a página mantém a tela
+  const saved0 = readCache<{ f: F; group: string; page: number }>('central:estado')?.data
+  const [f, setF] = useState<F>(saved0?.f ?? EMPTY)
+  const [applied, setApplied] = useState<F>(saved0?.f ?? EMPTY)
+  const [group, setGroup] = useState(saved0?.group ?? 'servico')
+  const [page, setPage] = useState(saved0?.page ?? 0)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [services, setServices] = useState<{ code: string; name: string }[]>([])
   const [owners, setOwners] = useState<{ id: string; full_name: string | null; email: string; role: string }[]>([])
   const [distTo, setDistTo] = useState<string[]>([])
   const [saved, setSaved] = useState<{ id: string; name: string; filters: F }[]>([])
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -100,20 +100,25 @@ export default function Opportunities() {
   }, [])
   useEffect(() => { loadSaved() }, [loadSaved])
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(null)
-    const [l, g] = await Promise.all([
-      apply(supabase.from('opportunity_center_v').select(COLS, { count: 'exact' }), applied)
-        .order('score', { ascending: false }).order('id').range(page * PAGE, page * PAGE + PAGE - 1),
-      supabase.rpc('opportunity_center_groups', { p_group: group, p_filters: toRpc(applied) }),
-    ])
-    if (l.error || g.error) setError((l.error ?? g.error)!.message)
-    setRows((l.data as unknown as Row[]) ?? [])
-    setCount(l.count ?? 0)
-    setGroups((g.data as typeof groups) ?? [])
-    setLoading(false)
-  }, [applied, page, group])
-  useEffect(() => { load() }, [load])
+  useEffect(() => { writeCache('central:estado', { f: applied, group, page }) }, [applied, group, page])
+  const key = JSON.stringify([applied, page, group])
+  const q = useCachedQuery<{ rows: Row[]; count: number; groups: { chave: string; rotulo: string; total: number; alta: number }[] }>(
+    `central:${key}`, async () => {
+      const [l, g] = await Promise.all([
+        apply(supabase.from('opportunity_center_v').select(COLS, { count: 'exact' }), applied)
+          .order('score', { ascending: false }).order('id').range(page * PAGE, page * PAGE + PAGE - 1),
+        supabase.rpc('opportunity_center_groups', { p_group: group, p_filters: toRpc(applied) }),
+      ])
+      const err = l.error ?? g.error
+      if (err) return { data: null, error: err.message }
+      return { data: { rows: (l.data as unknown as Row[]) ?? [], count: l.count ?? 0, groups: (g.data as { chave: string; rotulo: string; total: number; alta: number }[]) ?? [] }, error: null }
+    }, [key])
+  const rows = q.data?.rows ?? []
+  const count = q.data?.count ?? 0
+  const groups = q.data?.groups ?? []
+  const loading = q.loading && !q.data
+  const load = q.reload
+
 
   const run = (next: F) => { setApplied(next); setPage(0); setSel(new Set()) }
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
@@ -156,6 +161,7 @@ export default function Opportunities() {
     <>
       <PageHeader title="Central de oportunidades" description="Encontre empresas com oportunidade digital comprovada, monte segmentos e leve ao CRM." />
       {error && <Alert tone="error" className="mb-4">{error}</Alert>}
+      <DataStatus loading={q.loading} error={q.error} savedAt={q.savedAt} hasData={!!q.data} />
       {notice && <Alert tone="info" className="mb-4">{notice}</Alert>}
 
       <Card className="mb-4">

@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useCachedQuery } from '@/lib/cache'
+import { DataStatus } from '@/components/DataStatus'
 import { Link } from 'react-router-dom'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
@@ -22,28 +24,17 @@ const n = (v: unknown) => (v === null || v === undefined ? undefined : Number(v)
 export default function Dashboard() {
   const { hasRole } = useAuth()
   const [uf, setUf] = useState('')
-  const [data, setData] = useState<DashboardMetrics | null>(null)
-  const [com, setCom] = useState<CommercialMetrics | null>(null)
-  const [ex, setEx] = useState<Executive | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  async function load() {
-    setLoading(true)
-    setError(null)
-    const [d, c, x] = await Promise.all([
-      supabase.rpc('dashboard_metrics', { p_uf: uf || null }),
-      supabase.rpc('commercial_metrics', { p_uf: uf || null }),
-      supabase.rpc('executive_metrics', { p_uf: uf || null }),
-    ])
-    if (d.error || c.error || x.error) setError((d.error ?? c.error ?? x.error)!.message)
-    setEx((x.data as Executive) ?? null)
-    setData((d.data as DashboardMetrics) ?? null)
-    setCom((c.data as CommercialMetrics) ?? null)
-    setLoading(false)
+  const rpc = <T,>(fn: string) => async () => {
+    const r = await supabase.rpc(fn, { p_uf: uf || null })
+    return { data: (r.data as T) ?? null, error: r.error?.message ?? null }
   }
-
-  useEffect(() => { load() }, [uf]) // eslint-disable-line react-hooks/exhaustive-deps
+  const qd = useCachedQuery<DashboardMetrics>(`dash:base:${uf}`, rpc<DashboardMetrics>('dashboard_metrics'), [uf])
+  const qc = useCachedQuery<CommercialMetrics>(`dash:com:${uf}`, rpc<CommercialMetrics>('commercial_metrics'), [uf])
+  const qx = useCachedQuery<Executive>(`dash:exec:${uf}`, rpc<Executive>('executive_metrics'), [uf])
+  const data = qd.data, com = qc.data, ex = qx.data
+  const loading = qd.loading || qc.loading || qx.loading
+  const load = () => { qd.reload(); qc.reload(); qx.reload() }
+  const failed = [qd, qc, qx].find((q) => q.error)
 
   const cur = data?.competencia_vigente
   const semDados = data && data.total === 0
@@ -67,7 +58,8 @@ export default function Dashboard() {
         }
       />
 
-      {error && <Alert tone="error" title="Não foi possível carregar os indicadores" className="mb-6">{error}</Alert>}
+      <DataStatus loading={loading} error={failed?.error ?? null} savedAt={failed?.savedAt ?? qd.savedAt}
+        hasData={!!(data || com || ex)} className="mb-6" />
 
       <Card className="mb-6">
         <CardContent className="flex flex-col gap-2 pt-5 text-sm md:flex-row md:items-center md:gap-8">

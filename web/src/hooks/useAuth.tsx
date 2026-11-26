@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { clearCache, setCacheScope } from '@/lib/cache'
 import type { AppRole, Profile } from '@/lib/types'
 
 interface AuthState {
@@ -44,6 +45,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => sub.subscription.unsubscribe()
   }, [loadProfile])
 
+  setCacheScope(session?.user.id)
+
   const value: AuthState = {
     session,
     profile,
@@ -61,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     signOut: async () => {
       await supabase.auth.signOut()
+      clearCache()
       setProfile(null)
     },
     refreshProfile: () => loadProfile(session?.user.id),

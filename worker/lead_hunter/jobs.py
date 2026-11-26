@@ -406,6 +406,7 @@ class Worker:
         self.recover_stale_jobs(resume=True)
         self.heartbeat()
         before = self.inventory("início da rodada")
+        self.recalc(self.deadline)
         job = self.claim()
         if not job:
             self.scheduled_check()
@@ -434,6 +435,19 @@ class Worker:
             run_scheduled(self.s.database_url)
         except Exception:  # noqa: BLE001 — nunca derruba o worker
             log.exception("Falha no arquivamento de leads")
+
+    def recalc(self, deadline: float | None = None) -> None:
+        """Recálculo em lotes deixado por uma migration (ex.: pontuação 2.0)."""
+        from .recalc import run_pending
+
+        try:
+            budget = time.monotonic() + 40 * 60
+            res = run_pending(self.s.database_url, db_size_limit_mb=self.s.db_size_limit_mb,
+                              deadline=min(budget, deadline) if deadline else budget)
+            if res:
+                log.info("Recálculo: %s", json.dumps(res, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 — nunca derruba o worker
+            log.exception("Falha no recálculo em lotes")
 
     def intel(self, minutes: int = 10) -> None:
         """Rodada curta de inteligência digital (modo contínuo/VPS num único processo)."""

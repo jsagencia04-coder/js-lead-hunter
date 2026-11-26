@@ -75,7 +75,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '22333444'")
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '55666777'")
     # recomendações geradas e auditoria sem poluição
-    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 26  # + redes sociais, catálogo, materiais (011), loja virtual, Instagram, presença digital (015)
+    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 20  # 5 leads × até 5 recomendações mais relevantes (015)
     assert q(fresh_db, "select count(*) n from audit_logs where table_name in ('leads','establishments')")[0]["n"] == 0
     # UF do município derivada dos estabelecimentos
     assert q(fresh_db, "select uf from municipalities where code = '6001'")[0]["uf"] == "RJ"

@@ -131,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
             worker.loop()
         elif args.cmd == "maintenance":
             worker.inventory("manutenção (início)")
+            worker.recalc()
             worker.archive()
             worker.inventory("manutenção (fim)")
         elif args.cmd == "inventory":

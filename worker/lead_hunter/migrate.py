@@ -106,6 +106,8 @@ def migrate(database_url: str, directory: Path | None = None) -> list[str]:
             version = f.name.split("_", 1)[0]
             log.info("Aplicando migration %s", f.name)
             with c.transaction():
+                # migrations podem ser longas: sem o limite de tempo da conexão (Supabase)
+                c.execute("set local statement_timeout = 0")
                 c.execute(f.read_text(encoding="utf-8"))
                 c.execute("insert into public.app_migrations (version, name) values (%s, %s)", (version, f.name))
             applied_now.append(f.name)

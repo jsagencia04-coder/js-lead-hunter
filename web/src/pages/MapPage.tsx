@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import brazil from '@svg-maps/brazil'
 import { supabase } from '@/lib/supabase'
+import { useCachedQuery } from '@/lib/cache'
+import { DataStatus } from '@/components/DataStatus'
 import type { DashboardMetrics, LeadRow } from '@/lib/types'
 import { STAGE_LABEL } from '@/lib/types'
 import { cn, formatCnpj, formatDate, nf } from '@/lib/utils'
@@ -24,22 +27,22 @@ const STATE_NAME: Record<string, string> = Object.fromEntries(MAP.locations.map(
 const SHADES = ['#dbe4f8', '#a9bdf0', '#6f92e4', '#3a68d1', '#1f45a6']
 
 export default function MapPage() {
-  const [days, setDays] = useState(90)
-  const [metric, setMetric] = useState<'empresas' | 'leads'>('empresas')
-  const [counts, setCounts] = useState<StateCount[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [hover, setHover] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    setLoading(true)
-    supabase.rpc('map_state_counts', { p_days: days }).then(({ data, error }) => {
-      if (error) setError(error.message)
-      setCounts((data as StateCount[]) ?? [])
-      setLoading(false)
-    })
+  // filtros e estado selecionado ficam na URL: atualizar a página mantém a tela
+  const [params, setParams] = useSearchParams()
+  const days = Number(params.get('dias') ?? 90)
+  const metric = (params.get('indicador') === 'leads' ? 'leads' : 'empresas') as 'empresas' | 'leads'
+  const selected = params.get('uf')
+  const setParam = (k: string, v: string | null) => setParams((p) => { const n = new URLSearchParams(p); if (v === null) n.delete(k); else n.set(k, v); return n }, { replace: true })
+  const setDays = (d: number) => setParam('dias', String(d))
+  const setMetric = (m: 'empresas' | 'leads') => setParam('indicador', m)
+  const setSelected = (uf: string | null) => setParam('uf', uf)
+  const q = useCachedQuery<StateCount[]>(`map:${days}`, async () => {
+    const r = await supabase.rpc('map_state_counts', { p_days: days })
+    return { data: (r.data as StateCount[]) ?? null, error: r.error?.message ?? null }
   }, [days])
+  const counts = useMemo(() => q.data ?? [], [q.data])
+  const [hover, setHover] = useState<string | null>(null)
+  const loading = q.loading
 
   const byUf = useMemo(() => Object.fromEntries(counts.map((c) => [c.uf, c])), [counts])
   const max = Math.max(1, ...counts.map((c) => c[metric]))
@@ -68,7 +71,7 @@ export default function MapPage() {
           </>
         }
       />
-      {error && <Alert tone="error" className="mb-4">{error}</Alert>}
+      <DataStatus loading={q.loading} error={q.error} savedAt={q.savedAt} hasData={!!q.data} />
       <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
         <Card className="relative">
           <CardContent className="pt-5">
@@ -130,29 +133,33 @@ function Row({ k, v }: { k: string; v: number }) {
 
 function StateView({ uf, onBack }: { uf: string; onBack: () => void }) {
   const [municipios, setMunicipios] = useState<{ code: string; name: string }[]>([])
-  const [mun, setMun] = useState('')
-  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null)
-  const [leads, setLeads] = useState<LeadRow[]>([])
+  const [params, setParams] = useSearchParams()
+  const mun = params.get('municipio') ?? ''
+  const setMun = (v: string) => setParams((p) => { const n = new URLSearchParams(p); if (v) n.set('municipio', v); else n.delete('municipio'); return n }, { replace: true })
   const [openId, setOpenId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [munError, setMunError] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.from('municipalities').select('code,name').eq('uf', uf).order('name')
-      .then(({ data, error }) => { if (error) setError(error.message); setMunicipios(data ?? []) })
+      .then(({ data, error }) => { if (error) setMunError(error.message); setMunicipios(data ?? []) })
   }, [uf])
 
-  useEffect(() => {
-    supabase.rpc('dashboard_metrics', { p_uf: uf, p_municipio: mun || null })
-      .then(({ data, error }) => { if (error) setError(error.message); setMetrics(data as DashboardMetrics) })
+  const qm = useCachedQuery<DashboardMetrics>(`map:uf:${uf}:${mun}`, async () => {
+    const r = await supabase.rpc('dashboard_metrics', { p_uf: uf, p_municipio: mun || null })
+    return { data: (r.data as DashboardMetrics) ?? null, error: r.error?.message ?? null }
+  }, [uf, mun])
+  const ql = useCachedQuery<LeadRow[]>(`map:leads:${uf}:${mun}`, async () => {
     let q = supabase.from('lead_list_v')
       .select('id,cnpj,cnpj_basico,stage,score,priority,razao_social,nome_fantasia,municipio,data_inicio_atividade,has_phone,has_email')
       .eq('uf', uf)
     if (mun) q = q.eq('municipio_code', mun)
-    q.order('score', { ascending: false }).limit(50).then(({ data, error }) => {
-      if (error) setError(error.message)
-      setLeads((data as unknown as LeadRow[]) ?? [])
-    })
+    const r = await q.order('score', { ascending: false }).limit(50)
+    return { data: (r.data as unknown as LeadRow[]) ?? null, error: r.error?.message ?? null }
   }, [uf, mun])
+  const metrics = qm.data
+  const leads = ql.data ?? []
+  const failed = qm.error ? qm : ql.error ? ql : null
+  const error = munError
 
   return (
     <>
@@ -162,6 +169,7 @@ function StateView({ uf, onBack }: { uf: string; onBack: () => void }) {
         actions={<Button variant="outline" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Voltar à visão nacional</Button>}
       />
       {error && <Alert tone="error" className="mb-4">{error}</Alert>}
+      <DataStatus loading={qm.loading || ql.loading} error={failed?.error ?? null} savedAt={failed?.savedAt ?? qm.savedAt} hasData={!!(qm.data || ql.data)} />
       <div className="mb-6 max-w-sm space-y-1">
         <Label>Município</Label>
         <Select value={mun} onChange={(e) => setMun(e.target.value)}>

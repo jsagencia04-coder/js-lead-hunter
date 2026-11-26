@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, Pause, Play, RefreshCw, Save } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { friendlyError, readCache, writeCache } from '@/lib/cache'
 import { formatDateTime, nf } from '@/lib/utils'
 import { CHANNEL_STATUS, PLATFORM } from '@/lib/crm'
 import { useAuth } from '@/hooks/useAuth'
@@ -30,10 +31,11 @@ export default function Intelligence() {
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
   const isManager = hasRole('admin', 'gestor')
-  const [s, setS] = useState<Summary | null>(null)
-  const [cfg, setCfg] = useState<Cfg | null>(null)
-  const [runs, setRuns] = useState<Run[]>([])
-  const [ints, setInts] = useState<Integration[]>([])
+  const c0 = readCache<{ s: Summary; runs: Run[]; ints: Integration[] }>('intel')?.data
+  const [s, setS] = useState<Summary | null>(c0?.s ?? null)
+  const [cfg, setCfg] = useState<Cfg | null>(c0?.s?.config ?? null)
+  const [runs, setRuns] = useState<Run[]>(c0?.runs ?? [])
+  const [ints, setInts] = useState<Integration[]>(c0?.ints ?? [])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [ok, setOk] = useState<string | null>(null)
@@ -45,11 +47,12 @@ export default function Intelligence() {
       supabase.from('enrichment_runs').select('*').order('started_at', { ascending: false }).limit(15),
       supabase.from('integration_status').select('*').in('key', ['inteligencia', 'google_places', 'brave']),
     ])
-    if (a.error) setError(a.error.message)
+    if (a.error) { setError(friendlyError(a.error.message)); setLoading(false); return }
     setS(a.data as Summary)
     setCfg((a.data as Summary)?.config ?? null)
     setRuns((r.data as Run[]) ?? [])
     setInts((i.data as Integration[]) ?? [])
+    writeCache('intel', { s: a.data, runs: r.data ?? [], ints: i.data ?? [] })
     setLoading(false)
   }, [])
   useEffect(() => { load() }, [load])

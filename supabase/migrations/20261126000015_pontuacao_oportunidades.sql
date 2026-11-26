@@ -322,14 +322,18 @@ begin
     left join cnae_best cb on cb.id = b.id
     join dig d on d.id = b.id
   )
+  , scored as (
+    select c.*, least(100, (select coalesce(sum(v::numeric), 0) from jsonb_each_text(c.breakdown) as t(k, v)))::smallint as total
+      from calc c
+  )
   update public.leads l
-     set score = least(100, (select coalesce(sum(v::numeric), 0) from jsonb_each_text(c.breakdown) as t(k, v)))::smallint,
-         score_breakdown = c.breakdown, score_reasons = c.reasons, score_version = ver,
+     set score = c.total, score_breakdown = c.breakdown, score_reasons = c.reasons, score_version = ver,
          diagnosis_confidence = c.conf
-    from calc c
+    from scored c
    where c.id = l.id
-     and (l.score_breakdown is distinct from c.breakdown or l.score_version is distinct from ver
-          or l.diagnosis_confidence is distinct from c.conf or l.score_reasons is distinct from c.reasons);
+     and (l.score is distinct from c.total or l.score_breakdown is distinct from c.breakdown
+          or l.score_version is distinct from ver or l.diagnosis_confidence is distinct from c.conf
+          or l.score_reasons is distinct from c.reasons);
   get diagnostics n = row_count;
   return n;
 end $$;
@@ -369,6 +373,7 @@ returns integer
 language plpgsql security definer set search_path = public as $$
 declare
   n integer;
+  max_por_lead constant integer := 5;   -- as telas usam até 3; o resumo usa a primeira
 begin
   delete from public.lead_recommendations lr
    using public.leads l
@@ -376,44 +381,55 @@ begin
      and (p_lead_ids is null or l.id = any (p_lead_ids))
      and (p_import_job_id is null or l.import_job_id = p_import_job_id);
 
+  with alvo as (
+    select l.id, l.cnpj, l.import_job_id from public.leads l
+     where (p_lead_ids is null or l.id = any (p_lead_ids))
+       and (p_import_job_id is null or l.import_job_id = p_import_job_id)
+  ),
+  por_cnae as (
+    select distinct on (a.id, cr.service_id)
+           a.id as lead_id, cr.service_id, cr.id as rule_id, cr.relevance, cr.reason, false as digital
+      from alvo a
+      join public.establishments e on e.cnpj = a.cnpj
+      join public.cnae_service_rules cr
+        on cr.active and (cr.cnae_prefix = '*' or e.cnae_principal like cr.cnae_prefix || '%')
+      join public.service_catalog s on s.id = cr.service_id and s.active
+     order by a.id, cr.service_id, case when cr.cnae_prefix = '*' then 0 else length(cr.cnae_prefix) end desc
+  ),
+  por_evidencia as (
+    select distinct on (sg.lead_id, dr.service_id)
+           sg.lead_id, dr.service_id, null::uuid as rule_id, dr.relevance, 'Verificado: ' || dr.reason as reason, true as digital
+      from public.lead_digital_signals sg
+      join alvo a on a.id = sg.lead_id
+      join public.digital_service_rules dr on dr.active and (
+           (dr.condition = 'site_nao_localizado' and sg.site_status = 'nao_localizado')
+        or (dr.condition = 'site_estacionado' and sg.site_status = 'verificado' and sg.site_estacionado)
+        or (dr.condition = 'site_problemas_tecnicos' and sg.site_status = 'verificado' and sg.site_problemas_altos > 0)
+        or (dr.condition = 'site_sem_seo' and sg.site_status = 'verificado' and sg.site_sem_seo)
+        or (dr.condition = 'instagram_nao_localizado' and sg.instagram_status = 'nao_localizado')
+        or (dr.condition = 'google_nao_localizado' and sg.google_status = 'nao_localizado')
+        or (dr.condition = 'whatsapp_nao_divulgado' and sg.site_status = 'verificado' and sg.whatsapp_status = 'nao_localizado')
+        or (dr.condition = 'sem_presenca_digital' and sg.site_status = 'nao_localizado'
+            and sg.instagram_status = 'nao_localizado' and sg.google_status = 'nao_localizado'))
+      join public.service_catalog s on s.id = dr.service_id and s.active
+     order by sg.lead_id, dr.service_id, dr.relevance desc
+  ),
+  -- por serviço: maior relevância; com evidência digital, o motivo verificado prevalece
+  junto as (
+    select lead_id, service_id,
+           (array_agg(rule_id order by digital desc))[1] as rule_id,
+           max(relevance) as relevance,
+           (array_agg(reason order by digital desc))[1] as reason
+      from (select * from por_cnae union all select * from por_evidencia) x
+     group by lead_id, service_id
+  ),
+  ranked as (
+    select j.*, row_number() over (partition by j.lead_id order by j.relevance desc, s.sort_order, j.service_id) as rn
+      from junto j join public.service_catalog s on s.id = j.service_id
+  )
   insert into public.lead_recommendations (lead_id, service_id, rule_id, relevance, reason)
-  select distinct on (l.id, cr.service_id)
-         l.id, cr.service_id, cr.id, cr.relevance, cr.reason
-    from public.leads l
-    join public.establishments e on e.cnpj = l.cnpj
-    join public.cnae_service_rules cr
-      on cr.active and (cr.cnae_prefix = '*' or e.cnae_principal like cr.cnae_prefix || '%')
-    join public.service_catalog s on s.id = cr.service_id and s.active
-   where (p_lead_ids is null or l.id = any (p_lead_ids))
-     and (p_import_job_id is null or l.import_job_id = p_import_job_id)
-   order by l.id, cr.service_id,
-            case when cr.cnae_prefix = '*' then 0 else length(cr.cnae_prefix) end desc;
+  select lead_id, service_id, rule_id, relevance, reason from ranked where rn <= max_por_lead;
   get diagnostics n = row_count;
-
-  insert into public.lead_recommendations (lead_id, service_id, rule_id, relevance, reason)
-  select distinct on (x.lead_id, x.service_id) x.lead_id, x.service_id, null, x.relevance, 'Verificado: ' || x.reason
-    from (
-      select sg.lead_id, dr.service_id, dr.relevance, dr.reason
-        from public.lead_digital_signals sg
-        join public.leads l on l.id = sg.lead_id
-        join public.digital_service_rules dr on dr.active and (
-             (dr.condition = 'site_nao_localizado' and sg.site_status = 'nao_localizado')
-          or (dr.condition = 'site_estacionado' and sg.site_status = 'verificado' and sg.site_estacionado)
-          or (dr.condition = 'site_problemas_tecnicos' and sg.site_status = 'verificado' and sg.site_problemas_altos > 0)
-          or (dr.condition = 'site_sem_seo' and sg.site_status = 'verificado' and sg.site_sem_seo)
-          or (dr.condition = 'instagram_nao_localizado' and sg.instagram_status = 'nao_localizado')
-          or (dr.condition = 'google_nao_localizado' and sg.google_status = 'nao_localizado')
-          or (dr.condition = 'whatsapp_nao_divulgado' and sg.site_status = 'verificado' and sg.whatsapp_status = 'nao_localizado')
-          or (dr.condition = 'sem_presenca_digital' and sg.site_status = 'nao_localizado'
-              and sg.instagram_status = 'nao_localizado' and sg.google_status = 'nao_localizado'))
-        join public.service_catalog s on s.id = dr.service_id and s.active
-       where (p_lead_ids is null or sg.lead_id = any (p_lead_ids))
-         and (p_import_job_id is null or l.import_job_id = p_import_job_id)
-    ) x
-   order by x.lead_id, x.service_id, x.relevance desc
-  on conflict (lead_id, service_id) do update
-    set relevance = greatest(public.lead_recommendations.relevance, excluded.relevance),
-        reason = excluded.reason, rule_id = null;
 
   perform public.refresh_lead_insights(
     case when p_lead_ids is not null then p_lead_ids
@@ -795,9 +811,36 @@ revoke all on function public.commercial_metrics(text) from public, anon;
 grant execute on function public.commercial_metrics(text) to authenticated;
 
 -- ---------------------------------------------------------------------
--- 8. Aplica a nova pontuação e as recomendações
+-- 8. Desempenho das políticas RLS: a permissão é avaliada UMA vez por consulta
+--    (initPlan) e não linha a linha. Mesma regra de acesso; só muda o plano.
+--    Em 26/11/2026 o mapa (98 mil empresas) estourava o tempo limite de 8 s.
 -- ---------------------------------------------------------------------
-select set_config('app.bulk_load', 'on', true);
-select public.recalculate_lead_scores(null, null, public.current_reference_date());
-select public.rebuild_lead_recommendations();
+do $$
+declare
+  p record;
+  q text;
+  c text;
+  rx constant text := '(?<!SELECT )(is_active_user\(\)|has_role\(ARRAY\[[^\]]*\]\)|auth\.uid\(\))';
+begin
+  for p in select schemaname, tablename, policyname, qual, with_check from pg_policies where schemaname = 'public' loop
+    q := case when p.qual is not null then regexp_replace(p.qual, rx, '(SELECT \1)', 'g') end;
+    c := case when p.with_check is not null then regexp_replace(p.with_check, rx, '(SELECT \1)', 'g') end;
+    if q is distinct from p.qual or c is distinct from p.with_check then
+      execute format('alter policy %I on %I.%I%s%s', p.policyname, p.schemaname, p.tablename,
+                     case when q is not null then ' using (' || q || ')' else '' end,
+                     case when c is not null then ' with check (' || c || ')' else '' end);
+    end if;
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 9. Recálculo da pontuação 2.0: feito pelo worker em LOTES, fora desta
+--    migration (no Supabase gratuito, recalcular 94 mil leads numa única
+--    transação estourou o tempo limite e quase dobra o espaço do banco).
+-- ---------------------------------------------------------------------
+insert into public.app_settings (key, value, description)
+values ('recalculo_pendente', jsonb_build_object('motivo', 'pontuação 2.0', 'desde', now(), 'ultimo_id', null),
+        'Recálculo de pontuação, recomendações e resumo dos leads em andamento (feito pelo worker em lotes).')
+on conflict (key) do update set value = excluded.value, updated_at = now();
+
 select public.take_inventory_snapshot('migration 015 (pontuação 2.0)');

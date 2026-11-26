@@ -120,3 +120,25 @@ def test_backup_verificavel_e_restauravel(fresh_db, empty_db, tmp_path):
     with open(dest / "leads.csv.gz", "ab") as fh:
         fh.write(b"x")
     assert any("leads" in p for p in bk.verify(dest))
+
+
+def test_recalculo_em_lotes_retomavel(fresh_db, tmp_path):
+    """Regressão de 26/11/2026: a migration 015 estourou o tempo limite recalculando tudo de uma vez."""
+    from lead_hunter.recalc import run_pending
+
+    root = tmp_path / "rf"
+    assert _import(fresh_db, root, tmp_path)["status"] == "concluido"
+    q(fresh_db, "delete from lead_insights returning 1")
+    q(fresh_db, """insert into app_settings (key, value) values ('recalculo_pendente', '{"motivo": "teste"}')
+                   on conflict (key) do update set value = excluded.value returning 1""")
+    q(fresh_db, "update leads set score = 0 returning 1")
+    # interrompido no meio (prazo esgotado) e retomado de onde parou
+    import time
+    res = run_pending(fresh_db, batch=2, deadline=time.monotonic() - 1)
+    assert res and not res["concluido"]
+    res = run_pending(fresh_db, batch=2)
+    assert res["concluido"] and res["processados"] == 5
+    assert not q(fresh_db, "select 1 from app_settings where key = 'recalculo_pendente'")
+    assert q(fresh_db, "select count(*) n from lead_insights")[0]["n"] == 5
+    assert q(fresh_db, "select min(score) s from leads")[0]["s"] > 0
+    assert run_pending(fresh_db) is None

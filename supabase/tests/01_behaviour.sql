@@ -85,7 +85,8 @@ select pg_temp.assert((select score = 38 from leads where cnpj_basico = '12ABC34
 select pg_temp.assert((select score_reasons ->> 'oportunidade_digital' like '%não pesquisada%' from leads where cnpj_basico = '12ABC345'),
   'motivo registrado: sem pesquisa, sem pontos de ausência digital');
 select pg_temp.assert((select score_version is not null from leads where cnpj_basico = '12ABC345'), 'versão das regras registrada');
-select pg_temp.assert((select count(*) = 12 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
+select pg_temp.assert((select count(*) = 10 from lead_recommendations), 'recomendações por CNAE: as 5 mais relevantes por lead');
+select pg_temp.assert((select max(n) <= 5 from (select count(*) n from lead_recommendations group by lead_id) x), 'no máximo 5 recomendações por lead');
 select pg_temp.assert((select count(*) = 0 from audit_logs where table_name = 'leads'), 'carga em massa não gera auditoria linha a linha');
 select pg_temp.assert((select count(*) = 2 from lead_events where event_type = 'criado'), 'histórico registra criação');
 
@@ -381,9 +382,10 @@ select pg_temp.assert((select sum(total) >= 1 from opportunity_center_groups('uf
 select pg_temp.assert((select count(*) = 0 from opportunity_center_groups('uf', '{"sem_site": true}')), 'central: empresa bloqueada fica fora');
 select pg_temp.expect_error($$select opportunity_center_groups('x; drop table leads', '{}')$$, 'agrupamento inválido recusado');
 select pg_temp.assert(
-  (select bool_or(s.code = 'landing_page' and lr.reason like 'Verificado:%') from lead_recommendations lr
-     join service_catalog s on s.id = lr.service_id join leads l on l.id = lr.lead_id where l.cnpj_basico = '11222333'),
-  'recomendação por evidência digital (landing page para quem não tem site)');
+  (select s.code = 'site_institucional' and lr.reason like 'Verificado:%' from lead_recommendations lr
+     join service_catalog s on s.id = lr.service_id join leads l on l.id = lr.lead_id where l.cnpj_basico = '11222333'
+    order by lr.relevance desc, s.sort_order limit 1),
+  'principal recomendação vem da evidência digital, com motivo verificado');
 select pg_temp.assert(sales_assistant((select id from leads where cnpj_basico = '12ABC345')) ? 'proxima_acao', 'assistente: próxima ação');
 select pg_temp.assert(sales_assistant((select id from leads where cnpj_basico = '12ABC345')) -> 'servico_recomendado' ? 'nome',
   'assistente: serviço recomendado');
