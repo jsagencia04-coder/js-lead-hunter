@@ -59,7 +59,9 @@ def test_enriquecimento_pontua_oportunidade_digital(fresh_db, tmp_path):
 
     padaria = q(fresh_db, "select score, digital_presence, website from leads where cnpj_basico = '11222333'")[0]
     assert padaria["digital_presence"]["status"] == "sem_site"
-    assert padaria["score"] == antes + 30  # oportunidade digital efetivamente identificada
+    # pontuação 2.0: o legado (só domínio do e-mail) não pontua ausência; quem pontua é o motor de
+    # inteligência digital, com pesquisa conclusiva (ver test_intel.py)
+    assert padaria["score"] == antes
     alfa = q(fresh_db, "select website, digital_presence from leads where cnpj_basico = '12ABC345'")[0]
     assert alfa["website"] == "https://alfa.com/" and alfa["digital_presence"]["status"] == "site_ok"
     # segunda rodada não verifica de novo

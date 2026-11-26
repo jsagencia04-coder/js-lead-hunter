@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Ban, CalendarClock, CheckCircle2, Loader2, MessageSquarePlus, PhoneCall, X } from 'lucide-react'
+import { Ban, Loader2, MessageSquarePlus, PhoneCall, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import { STAGES, STAGE_LABEL, type LeadRow, type LeadStage, type Profile } from '@/lib/types'
+import { STAGE_LABEL, type LeadRow, type LeadStage, type Profile } from '@/lib/types'
 import { brl, formatCnpj, formatDate, formatDateTime, PORTE_LABEL } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,8 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import { Alert } from '@/components/ui/alert'
-import { ApproachSection, DiagnosisSection, ProposalsSection, type Diagnosis } from '@/components/LeadCommercial'
+import { ApproachSection, ProposalsSection, type Diagnosis } from '@/components/LeadCommercial'
+import { AssistantSection, ChannelsSection, ContractsSection, OpportunitiesSection, TagsSection, TasksSection, type Assistant } from '@/components/LeadCrm'
 
 interface LeadDetail extends LeadRow {
   owner_id: string | null
@@ -70,16 +71,15 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [suppressed, setSuppressed] = useState(false)
-  const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null)
+  const [diagnosis, setDiagnosis] = useState<Assistant | null>(null)
+  const [openOpp, setOpenOpp] = useState<string | null>(null)
   const [contactKind, setContactKind] = useState<'contato' | 'resposta_recebida'>('contato')
 
   const [note, setNote] = useState('')
   const [channel, setChannel] = useState('telefone')
   const [contact, setContact] = useState('')
-  const [followUp, setFollowUp] = useState('')
   const [website, setWebsite] = useState('')
   const [blockReason, setBlockReason] = useState('')
-  const [lostReason, setLostReason] = useState('')
 
   const load = useCallback(async () => {
     if (!leadId) return
@@ -90,20 +90,19 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
       supabase.from('lead_recommendations').select('relevance,reason,service_catalog(name)').eq('lead_id', leadId).order('relevance', { ascending: false }),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       supabase.from('profiles').select('id,full_name,email').eq('active', true).order('full_name'),
-      supabase.rpc('lead_diagnosis', { p_lead_id: leadId }),
+      supabase.rpc('sales_assistant', { p_lead_id: leadId }),
     ])
     const err = l.error ?? x.error ?? r.error ?? e.error
     if (err) setError(err.message)
     const detail = l.data as LeadDetail | null
     setLead(detail)
     setExtra(x.data as LeadExtra | null)
-    setDiagnosis((d.data as Diagnosis | null) ?? null)
+    setDiagnosis((d.data as Assistant | null) ?? null)
     setRecs((r.data as unknown as Recommendation[]) ?? [])
     setEvents((e.data as LeadEvent[]) ?? [])
     setOwners(p.data ?? [])
     setPeople(Object.fromEntries((p.data ?? []).map((u) => [u.id, u.full_name ?? u.email])))
     setWebsite(detail?.website ?? '')
-    setFollowUp(detail?.next_follow_up_at ? detail.next_follow_up_at.slice(0, 16) : '')
     if (detail) {
       const s = await supabase.from('contact_suppressions').select('id').eq('cnpj_basico', detail.cnpj_basico).maybeSingle()
       setSuppressed(!!s.data)
@@ -137,13 +136,6 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
     if (ok) { setNote(''); setContact('') }
   }
 
-  async function completeFollowUp() {
-    const ok = await run(() => supabase.from('lead_events').insert({
-      lead_id: leadId, event_type: 'follow_up_concluido', scheduled_for: lead?.next_follow_up_at, actor_id: profile!.id,
-    }))
-    if (ok) await updateLead({ next_follow_up_at: null })
-  }
-
   async function block(e: FormEvent) {
     e.preventDefault()
     if (!lead || !blockReason.trim()) return
@@ -151,15 +143,6 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
       cnpj_basico: lead.cnpj_basico, reason: blockReason.trim(), origin: 'pedido_titular', created_by: profile!.id,
     }))
     if (ok) setBlockReason('')
-  }
-
-  function changeStage(stage: LeadStage) {
-    if (stage === 'perdido') {
-      if (!lostReason.trim()) { setError('Informe o motivo da perda antes de mover para "Perdido".'); return }
-      updateLead({ stage, lost_reason: lostReason.trim() })
-    } else {
-      updateLead({ stage })
-    }
   }
 
   const phone = lead?.telefone1 ? `(${lead.ddd1 ?? ''}) ${lead.telefone1}` : null
@@ -246,54 +229,51 @@ export function LeadDrawer({ leadId, onClose, onChanged }: { leadId: string | nu
               </div>
             </Section>
 
-            <Section title="Diagnóstico comercial">
-              <DiagnosisSection diagnosis={diagnosis} />
+            <Section title="Assistente comercial: diagnóstico e próxima ação">
+              <AssistantSection a={diagnosis} />
+            </Section>
+
+            <Section title="Oportunidades (funil)">
+              <OpportunitiesSection leadId={leadId} canEdit={canEdit} suppressed={suppressed} userId={profile!.id} owners={owners}
+                onChanged={() => { load(); onChanged?.() }} onOpenOpp={setOpenOpp} />
+            </Section>
+
+            <Section title="Agenda e tarefas">
+              <TasksSection leadId={leadId} opportunityId={openOpp} canEdit={canEdit} suppressed={suppressed} userId={profile!.id}
+                owners={owners} onChanged={() => { load(); onChanged?.() }} />
+            </Section>
+
+            <Section title="Presença digital">
+              <ChannelsSection leadId={leadId} canEdit={canEdit} canReset={hasRole('admin', 'gestor')} />
             </Section>
 
             <Section title="Abordagem sugerida">
-              <ApproachSection lead={lead} diagnosis={diagnosis} dominio={extra?.digital_presence?.dominio ?? null}
+              <ApproachSection lead={lead} diagnosis={diagnosis as unknown as Diagnosis} dominio={extra?.digital_presence?.dominio ?? null}
                 suppressed={suppressed} canEdit={canEdit} userName={profile?.full_name ?? null} userId={profile!.id}
                 leadId={leadId} onChanged={() => { load(); onChanged?.() }} />
             </Section>
 
             <Section title="Propostas e negociação">
-              <ProposalsSection leadId={leadId} canEdit={canEdit} userId={profile!.id} onChanged={() => { load(); onChanged?.() }} />
+              <ProposalsSection leadId={leadId} opportunityId={openOpp} canEdit={canEdit} userId={profile!.id} onChanged={() => { load(); onChanged?.() }} />
+            </Section>
+
+            <Section title="Contratos e pós-venda">
+              <ContractsSection leadId={leadId} opportunityId={openOpp} canEdit={canEdit} userId={profile!.id} onChanged={() => { load(); onChanged?.() }} />
+            </Section>
+
+            <Section title="Tags e segmentos">
+              <TagsSection leadId={leadId} canEdit={canEdit} userId={profile!.id} />
             </Section>
 
             {canEdit && (
               <Section title="Gestão comercial">
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <Label>Etapa</Label>
-                    <Select value={lead.stage} disabled={busy} onChange={(e) => changeStage(e.target.value as LeadStage)}>
-                      {STAGES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Responsável</Label>
+                    <Label>Responsável pela empresa</Label>
                     <Select value={lead.owner_id ?? ''} disabled={busy} onChange={(e) => updateLead({ owner_id: e.target.value || null })}>
                       <option value="">Sem responsável</option>
                       {owners.map((o) => <option key={o.id} value={o.id}>{o.full_name ?? o.email}</option>)}
                     </Select>
-                  </div>
-                  <div className="space-y-1 md:col-span-2">
-                    <Label>Motivo da perda (obrigatório para mover para “Perdido”)</Label>
-                    <Input value={lostReason} onChange={(e) => setLostReason(e.target.value)} placeholder={extra?.lost_reason ?? ''} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Próximo follow-up</Label>
-                    <div className="flex gap-2">
-                      <Input type="datetime-local" value={followUp} onChange={(e) => setFollowUp(e.target.value)} />
-                      <Button variant="outline" disabled={busy || !followUp}
-                        onClick={() => updateLead({ next_follow_up_at: new Date(followUp).toISOString() })}>
-                        <CalendarClock className="h-4 w-4" /> Agendar
-                      </Button>
-                    </div>
-                    {lead.next_follow_up_at && (
-                      <Button variant="ghost" size="sm" disabled={busy} onClick={completeFollowUp}>
-                        <CheckCircle2 className="h-4 w-4" /> Concluir follow-up de {formatDateTime(lead.next_follow_up_at)}
-                      </Button>
-                    )}
                   </div>
                   <div className="space-y-1">
                     <Label>Site da empresa</Label>

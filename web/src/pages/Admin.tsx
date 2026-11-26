@@ -18,6 +18,7 @@ const TABS = [
   { key: 'usuarios', label: 'Usuários' },
   { key: 'bloqueios', label: 'Oposição ao contato' },
   { key: 'regras', label: 'Serviços e pontuação' },
+  { key: 'funil', label: 'Funil do CRM' },
   { key: 'arquivamento', label: 'Arquivamento' },
   { key: 'auditoria', label: 'Auditoria' },
 ] as const
@@ -45,6 +46,7 @@ export default function Admin() {
       {tab === 'usuarios' && <Users />}
       {tab === 'bloqueios' && <Suppressions />}
       {tab === 'regras' && <Rules />}
+      {tab === 'funil' && <Funnel />}
       {tab === 'arquivamento' && <Archive />}
       {tab === 'auditoria' && <Audit />}
     </>
@@ -635,4 +637,88 @@ function Audit() {
 
 function Muted({ children }: { children: ReactNode }) {
   return <span className="text-muted-foreground">{children}</span>
+}
+
+/* ------------------------------ Funil do CRM ------------------------------ */
+interface StageRow { code: string; label: string; sort_order: number; kind: string; probability: number; color: string; active: boolean }
+interface ReasonRow { id: string; label: string; active: boolean; sort_order: number }
+const KIND_LABEL: Record<string, string> = { aberta: 'Aberta', ganha: 'Ganha (contrato)', pos_venda: 'Pós-venda', perdida: 'Perdida' }
+
+function Funnel() {
+  const fb = useFeedback()
+  const [stages, setStages] = useState<StageRow[]>([])
+  const [reasons, setReasons] = useState<ReasonRow[]>([])
+  const [newReason, setNewReason] = useState('')
+  const load = useCallback(async () => {
+    const [a, b] = await Promise.all([
+      supabase.from('pipeline_stages').select('*').order('sort_order'),
+      supabase.from('loss_reasons').select('*').order('sort_order'),
+    ])
+    if (a.error) fb.setError(a.error.message)
+    setStages((a.data as StageRow[]) ?? [])
+    setReasons((b.data as ReasonRow[]) ?? [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [load])
+
+  async function save() {
+    fb.reset()
+    for (const st of stages) {
+      const { error } = await supabase.from('pipeline_stages').update({ label: st.label, sort_order: st.sort_order, probability: st.probability, active: st.active }).eq('code', st.code)
+      if (error) return fb.setError(error.message)
+    }
+    for (const r of reasons) {
+      const { error } = await supabase.from('loss_reasons').update({ label: r.label, active: r.active }).eq('id', r.id)
+      if (error) return fb.setError(error.message)
+    }
+    fb.setOk('Funil salvo.')
+  }
+  async function addReason(e: FormEvent) {
+    e.preventDefault()
+    if (!newReason.trim()) return
+    const { error } = await supabase.from('loss_reasons').insert({ label: newReason.trim(), sort_order: (reasons.at(-1)?.sort_order ?? 0) + 10 })
+    if (error) fb.setError(error.message); else { setNewReason(''); load() }
+  }
+  return (
+    <>
+      {fb.view}
+      <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
+        <Card>
+          <CardHeader><CardTitle>Etapas</CardTitle>
+            <CardDescription>Renomeie, reordene, ajuste a probabilidade ou desative etapas. O tipo (aberta, ganha, pós-venda, perdida) define o comportamento e não muda.</CardDescription></CardHeader>
+          <Table>
+            <THead><tr><TH>Ordem</TH><TH>Nome</TH><TH>Tipo</TH><TH>Probabilidade (%)</TH><TH>Ativa</TH></tr></THead>
+            <TBody>
+              {stages.map((st, i) => (
+                <TR key={st.code}>
+                  <TD><Input type="number" className="w-20" value={st.sort_order} onChange={(e) => setStages(stages.map((x, j) => j === i ? { ...x, sort_order: Number(e.target.value) } : x))} /></TD>
+                  <TD><Input value={st.label} onChange={(e) => setStages(stages.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} /></TD>
+                  <TD className="text-xs">{KIND_LABEL[st.kind]}</TD>
+                  <TD><Input type="number" min={0} max={100} className="w-20" value={st.probability} onChange={(e) => setStages(stages.map((x, j) => j === i ? { ...x, probability: Number(e.target.value) } : x))} /></TD>
+                  <TD><input type="checkbox" className="h-4 w-4 accent-primary" checked={st.active} disabled={['novo_lead', 'contrato_fechado', 'perdido'].includes(st.code)}
+                    onChange={(e) => setStages(stages.map((x, j) => j === i ? { ...x, active: e.target.checked } : x))} /></TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Motivos de perda</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {reasons.map((r, i) => (
+              <div key={r.id} className="flex items-center gap-2">
+                <Input value={r.label} onChange={(e) => setReasons(reasons.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} />
+                <input type="checkbox" className="h-4 w-4 accent-primary" checked={r.active} aria-label="Ativo"
+                  onChange={(e) => setReasons(reasons.map((x, j) => j === i ? { ...x, active: e.target.checked } : x))} />
+              </div>
+            ))}
+            <form onSubmit={addReason} className="flex gap-2 pt-2">
+              <Input value={newReason} onChange={(e) => setNewReason(e.target.value)} placeholder="Novo motivo" />
+              <Button type="submit" variant="outline"><Plus className="h-4 w-4" /></Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+      <Button className="mt-4" onClick={save}><Save className="h-4 w-4" /> Salvar funil</Button>
+    </>
+  )
 }

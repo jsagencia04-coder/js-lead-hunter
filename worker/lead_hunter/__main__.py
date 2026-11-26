@@ -3,6 +3,8 @@
     python -m lead_hunter run                 # laço contínuo (produção)
     python -m lead_hunter check               # mostra a competência mais recente na fonte
     python -m lead_hunter import [AAAA-MM]    # importa agora (sem esperar a interface)
+    python -m lead_hunter intel [--minutos N]  # inteligência digital (processo separado da importação)
+    python -m lead_hunter maintenance         # manutenção: arquivamento (se ligado) e inventário
     python -m lead_hunter inventory           # quantidades de registros (antes/depois de mudanças)
     python -m lead_hunter backup [PASTA]      # backup verificável (CSV.gz + manifesto com SHA-256)
     python -m lead_hunter backup-verify PASTA
@@ -56,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("once", help="uma rodada (para execução agendada, ex.: GitHub Actions)")
     sub.add_parser("migrate", help="aplica as migrations pendentes do banco")
     sub.add_parser("inventory", help="registra e mostra as quantidades de registros")
+    it = sub.add_parser("intel", help="processa a fila de inteligência digital")
+    it.add_argument("--minutos", type=int, default=40, help="tempo máximo da rodada (padrão 40)")
+    it.add_argument("--max", type=int, default=None, help="máximo de empresas nesta rodada")
+    sub.add_parser("maintenance", help="manutenção: arquivamento (se ligado) e inventário")
     bk = sub.add_parser("backup", help="backup verificável do banco")
     bk.add_argument("folder", nargs="?", help="pasta de destino (padrão: ./backups)")
     bv = sub.add_parser("backup-verify", help="confere um backup")
@@ -100,6 +106,18 @@ def main(argv: list[str] | None = None) -> int:
             return bk.main_verify(args.folder)
         return bk.main_restore_test(args.folder, args.target_url)
 
+    if args.cmd == "intel":
+        import json
+        import time
+
+        from .intel.engine import IntelEngine
+
+        s = Settings.from_env()
+        eng = IntelEngine(s.database_url, db_size_limit_mb=s.db_size_limit_mb)
+        stats = eng.run(deadline=time.monotonic() + args.minutos * 60, max_items=args.max)
+        print("Inteligência digital: " + json.dumps(stats, ensure_ascii=False))
+        return 0 if stats.get("situacao") != "falhou" else 2
+
     if args.cmd == "migrate":
         from .migrate import migrate
 
@@ -111,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             worker.loop()
+        elif args.cmd == "maintenance":
+            worker.inventory("manutenção (início)")
+            worker.archive()
+            worker.inventory("manutenção (fim)")
         elif args.cmd == "inventory":
             import json
 

@@ -74,4 +74,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -t js-lead-hunter-worker ./worker
+      - run: docker build -f worker/Dockerfile -t js-lead-hunter-worker .

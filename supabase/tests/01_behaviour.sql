@@ -76,12 +76,16 @@ select rebuild_lead_recommendations(p_import_job_id => 'aaaaaaaa-0000-0000-0000-
 select set_config('app.bulk_load', '', false);
 reset role;
 
--- varejo (CNAE 47): recência 15 + telefone 5 + e-mail 5 + porte 6 + CNAE 80% de 35 = 59
-select pg_temp.assert((select score = 59 from leads where cnpj_basico = '11222333'), 'pontuação calculada (59)');
+-- pontuação 2.0 (40/25/15/10/10). Varejo (CNAE 47), 5 dias: recência 10 + canais (telefone 30% + e-mail 20% de 10) 5
+-- + compatibilidade 80% de 25 = 20 + potencial do segmento (7 serviços ≥ 3) 15 + oportunidade digital 0 (não pesquisada) = 50
+select pg_temp.assert((select score = 50 from leads where cnpj_basico = '11222333'), 'pontuação calculada (50)');
 select pg_temp.assert((select priority = 'media' from leads where cnpj_basico = '11222333'), 'prioridade média sem oportunidade digital');
--- publicidade (CNAE 73), 60 dias: recência 8 + e-mail 5 + porte 8 + CNAE 85% de 35 = 51
-select pg_temp.assert((select score = 51 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (51)');
-select pg_temp.assert((select count(*) = 10 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
+-- publicidade (CNAE 73), 60 dias: recência 5 + e-mail 2 + compatibilidade 85% de 25 = 21 + potencial 2/3 de 15 = 10 → 38
+select pg_temp.assert((select score = 38 from leads where cnpj_basico = '12ABC345'), 'pontuação do CNPJ alfanumérico (38)');
+select pg_temp.assert((select score_reasons ->> 'oportunidade_digital' like '%não pesquisada%' from leads where cnpj_basico = '12ABC345'),
+  'motivo registrado: sem pesquisa, sem pontos de ausência digital');
+select pg_temp.assert((select score_version is not null from leads where cnpj_basico = '12ABC345'), 'versão das regras registrada');
+select pg_temp.assert((select count(*) = 12 from lead_recommendations), 'recomendações gerais + específicas por CNAE');
 select pg_temp.assert((select count(*) = 0 from audit_logs where table_name = 'leads'), 'carga em massa não gera auditoria linha a linha');
 select pg_temp.assert((select count(*) = 2 from lead_events where event_type = 'criado'), 'histórico registra criação');
 
@@ -91,10 +95,20 @@ select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111
 update cnae_service_rules set relevance = 100
  where cnae_prefix = '47' and service_id = (select id from service_catalog where code = 'site_institucional');
 select admin_recalculate_leads();
-select pg_temp.assert((select score = 66 from leads where cnpj_basico = '11222333'), 'regra editada pelo admin muda a pontuação (66)');
+select pg_temp.assert((select score = 55 from leads where cnpj_basico = '11222333'), 'regra editada pelo admin muda a pontuação (55)');
 update leads set digital_presence = '{"status": "sem_site"}' where cnpj_basico = '11222333';
 select admin_recalculate_leads();
-select pg_temp.assert((select score = 96 from leads where cnpj_basico = '11222333'), 'oportunidade digital verificada soma 30 (96)');
+select pg_temp.assert((select score = 55 from leads where cnpj_basico = '11222333'), 'status legado sem pesquisa não pontua ausência');
+reset role;  -- canais só são gravados pelo worker
+insert into digital_channels (cnpj_basico, lead_id, platform, status, source, confidence)
+select '11222333', id, 'site', 'nao_localizado', 'brave', 80 from leads where cnpj_basico = '11222333';
+insert into digital_channels (cnpj_basico, lead_id, platform, status, source, confidence)
+select '12ABC345', id, 'site', 'inconclusivo', 'dominio_email', 0 from leads where cnpj_basico = '12ABC345';
+set role authenticated;
+select admin_recalculate_leads();
+select pg_temp.assert((select score = 95 from leads where cnpj_basico = '11222333'), 'site não localizado após pesquisa soma 40 (95)');
+select pg_temp.assert((select score = 38 from leads where cnpj_basico = '12ABC345'), 'pesquisa inconclusiva não pontua');
+select pg_temp.assert((select count(*) >= 2 from scoring_versions), 'alteração de regra gera nova versão');
 select pg_temp.assert((select priority = 'alta' from leads where cnpj_basico = '11222333'), 'prioridade alta com oportunidade digital');
 select pg_temp.assert(
   (select relevance = 100 from lead_recommendations lr join service_catalog s on s.id = lr.service_id
@@ -280,3 +294,104 @@ reset role;
 select pg_temp.assert((select restored_at is null and restore_note like 'Empresa bloqueada%' from lead_archive
                         where cnpj_basico = '77000000'), 'bloqueio preservado na restauração');
 select pg_temp.assert((data_inventory() ->> 'bloqueios')::int = 3, 'inventário conta bloqueios');
+
+-- =====================================================================
+-- Migration 013 — CRM profissional
+-- =====================================================================
+select pg_temp.assert((select count(*) = 12 from pipeline_stages), '12 etapas iniciais do funil');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333', false);  -- comercial
+update pipeline_stages set label = 'x' where code = 'novo_lead';
+select pg_temp.assert((select label = 'Novo lead' from pipeline_stages where code = 'novo_lead'), 'comercial não edita etapas (só admin)');
+
+insert into opportunities (lead_id, title, created_by)
+select id, 'Site + identidade', auth.uid() from leads where cnpj_basico = '44555666';
+select pg_temp.assert((select status = 'aberta' and stage_code = 'novo_lead' and cnpj_basico = '44555666' from opportunities
+                        where title = 'Site + identidade'), 'oportunidade criada na etapa inicial');
+select pg_temp.assert((select count(*) = 1 from lead_events where event_type = 'oportunidade_criada'), 'criação no histórico');
+update opportunities set stage_code = 'reuniao_agendada' where title = 'Site + identidade';
+select pg_temp.assert((select stage = 'interessado' from leads where cnpj_basico = '44555666'), 'etapa legada do lead acompanha a oportunidade');
+select pg_temp.expect_error($$update opportunities set stage_code = 'perdido' where title = 'Site + identidade'$$, 'perder sem motivo');
+
+-- tarefas e agenda
+insert into crm_tasks (lead_id, opportunity_id, kind, title, due_at, owner_id, created_by)
+select o.lead_id, o.id, 'reuniao', 'Apresentar portfólio', now() - interval '1 hour', auth.uid(), auth.uid()
+  from opportunities o where title = 'Site + identidade';
+select pg_temp.assert((select next_follow_up_at is not null from leads where cnpj_basico = '44555666'), 'tarefa define o próximo follow-up');
+select pg_temp.assert((my_agenda() ->> 'atrasadas')::int = 1, 'agenda mostra tarefa atrasada');
+update crm_tasks set done_at = now(), outcome = 'Cliente gostou' where title = 'Apresentar portfólio';
+select pg_temp.assert((select count(*) = 1 from lead_events where event_type = 'reuniao'), 'reunião realizada no histórico');
+select pg_temp.assert((select next_follow_up_at is null from leads where cnpj_basico = '44555666'), 'sem tarefas abertas, sem follow-up');
+
+-- proposta da oportunidade, contrato e pós-venda
+insert into lead_proposals (lead_id, opportunity_id, title, amount, status, created_by)
+select lead_id, id, 'Proposta site', 3200, 'enviada', auth.uid() from opportunities where title = 'Site + identidade';
+select pg_temp.assert((select stage_code = 'proposta_enviada' and value = 3200 from opportunities where title = 'Site + identidade'),
+  'proposta avança a oportunidade e define o valor');
+insert into contracts (lead_id, opportunity_id, title, total_value, recurring_value, recurrence, signed_at, created_by)
+select lead_id, id, 'Site institucional', 3200, 300, 'mensal', current_date, auth.uid() from opportunities where title = 'Site + identidade';
+select pg_temp.assert((select status = 'ganha' and won_at is not null from opportunities where title = 'Site + identidade'), 'contrato fecha a oportunidade');
+select pg_temp.assert((select stage = 'convertido' from leads where cnpj_basico = '44555666'), 'lead vira cliente');
+update opportunities set stage_code = 'pos_venda' where title = 'Site + identidade';
+select pg_temp.assert((select status = 'pos_venda' from opportunities where title = 'Site + identidade'), 'pós-venda');
+
+-- reativação e várias oportunidades por empresa
+select pg_temp.assert(reopen_opportunity((select id from opportunities where title = 'Site + identidade'), 'qualificado', 'Gestão de redes') is not null,
+  'reativação cria nova oportunidade');
+select pg_temp.assert((select count(*) = 2 from opportunities where cnpj_basico = '44555666'), 'duas oportunidades, mesma empresa');
+select pg_temp.assert((select count(*) = 1 from companies where cnpj_basico = '44555666'), 'cadastro da empresa não duplica');
+select pg_temp.expect_error($$select distribute_leads(array(select id from leads), array[auth.uid()])$$, 'comercial distribuir leads');
+
+-- tags
+insert into tags (name, created_by) values ('Indicação', auth.uid());
+insert into lead_tags (lead_id, tag_id, created_by) select l.id, t.id, auth.uid() from leads l, tags t where l.cnpj_basico = '44555666';
+select pg_temp.assert((select count(*) = 1 from lead_tags), 'tag aplicada ao lead');
+select pg_temp.assert((select total = 1 from pipeline_counts() where stage_code = 'qualificado'), 'contagem do Kanban de oportunidades');
+reset role;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);  -- admin
+select pg_temp.assert(distribute_leads(array(select id from leads where owner_id is null), array['33333333-3333-3333-3333-333333333333'::uuid]) >= 1,
+  'admin distribui leads');
+select pg_temp.assert(add_leads_to_pipeline(array(select id from leads)) >= 1, 'adiciona leads ao funil');
+select pg_temp.assert((select count(*) = 0 from opportunities o join contact_suppressions s on s.cnpj_basico = o.cnpj_basico
+                        where o.source = 'central'), 'empresa bloqueada não entra no funil');
+select pg_temp.assert(add_leads_to_pipeline(array(select id from leads)) = 0, 'não duplica oportunidade aberta');
+insert into sales_goals (owner_id, period_month, metric, target, created_by)
+values ('33333333-3333-3333-3333-333333333333', date_trunc('month', current_date), 'receita_contratada', 10000, auth.uid());
+select pg_temp.assert((select realizado = 3200 from goals_progress()), 'meta individual com receita contratada');
+select pg_temp.expect_error($$insert into opportunities (lead_id, title) select id, 'x' from leads where cnpj_basico = '11222333'$$,
+  'oportunidade para empresa bloqueada');
+-- bloqueio fecha oportunidades abertas
+insert into contact_suppressions (cnpj_basico, reason, created_by) values ('44555666', 'pediu para parar', auth.uid());
+select pg_temp.assert((select bool_and(status <> 'aberta') from opportunities where cnpj_basico = '44555666'), 'bloqueio encerra oportunidades abertas');
+reset role;
+
+-- =====================================================================
+-- Migration 015 — pontuação, central de oportunidades, assistente, executivo
+-- =====================================================================
+set role authenticated;
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+select pg_temp.assert((select sum(points) = 100 from scoring_rules where active), 'pesos ativos somam 100 (40/25/15/10/10)');
+select pg_temp.assert((select points = 40 from scoring_rules where key = 'oportunidade_digital'), 'oportunidade digital vale 40');
+select pg_temp.assert((select count(*) >= 13 from service_catalog where active), 'catálogo com os serviços da JS Designer');
+select pg_temp.assert(exists (select 1 from opportunity_center_v where site_status = 'nao_localizado' and cnpj_basico = '11222333'),
+  'central: filtro empresas sem site');
+select pg_temp.assert((select sum(total) >= 1 from opportunity_center_groups('uf', '{}')), 'central: agrupamento por UF');
+select pg_temp.assert((select count(*) = 0 from opportunity_center_groups('uf', '{"sem_site": true}')), 'central: empresa bloqueada fica fora');
+select pg_temp.expect_error($$select opportunity_center_groups('x; drop table leads', '{}')$$, 'agrupamento inválido recusado');
+select pg_temp.assert(
+  (select bool_or(s.code = 'landing_page' and lr.reason like 'Verificado:%') from lead_recommendations lr
+     join service_catalog s on s.id = lr.service_id join leads l on l.id = lr.lead_id where l.cnpj_basico = '11222333'),
+  'recomendação por evidência digital (landing page para quem não tem site)');
+select pg_temp.assert(sales_assistant((select id from leads where cnpj_basico = '12ABC345')) ? 'proxima_acao', 'assistente: próxima ação');
+select pg_temp.assert(sales_assistant((select id from leads where cnpj_basico = '12ABC345')) -> 'servico_recomendado' ? 'nome',
+  'assistente: serviço recomendado');
+select pg_temp.assert(not exists (select 1 from jsonb_array_elements(sales_assistant((select id from leads where cnpj_basico = '12ABC345')) -> 'oportunidades') o
+                                   where o ->> 'tipo' = 'site'), 'assistente não afirma ausência de site inconclusiva');
+select pg_temp.assert((executive_metrics() -> 'comerciais' ->> 'receita_contratada_total')::numeric = 3200, 'executivo: receita contratada');
+select pg_temp.assert((executive_metrics() -> 'comerciais' ->> 'receita_recorrente_mensal')::numeric = 300, 'executivo: receita recorrente');
+select pg_temp.assert((executive_metrics() -> 'comerciais' ->> 'ticket_medio')::numeric = 3200, 'executivo: ticket médio');
+select pg_temp.assert(executive_metrics() -> 'denominadores' ? 'taxa_conversao_oportunidades', 'executivo: denominadores explícitos');
+select pg_temp.assert((executive_metrics() -> 'cadastrais' ->> 'sites_localizados')::int = 0, 'executivo: sites localizados');
+reset role;

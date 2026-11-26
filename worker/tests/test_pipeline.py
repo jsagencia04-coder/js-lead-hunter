@@ -59,7 +59,8 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert padaria["has_phone"] and padaria["opcao_simples"] is True
     assert float(padaria["capital_social"]) == 10000.0
     assert padaria["municipio"] == "SAO PAULO" and padaria["uf"] == "SP"
-    assert padaria["score"] == 59  # recência 15 + tel 5 + e-mail 5 + porte micro 6 + CNAE varejo 28
+    # pontuação 2.0: recência 10 + canais 5 + compatibilidade varejo 80% de 25 = 20 + potencial 15; sem pesquisa digital
+    assert padaria["score"] == 50
 
     alfa = next(r for r in leads.values() if r["cnpj_basico"] == "12ABC345")
     assert alfa["cnpj"] == "12ABC34501DE35"
@@ -74,7 +75,7 @@ def test_importacao_completa(fresh_db, tmp_path):
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '22333444'")
     assert q(fresh_db, "select 1 from establishments where cnpj_basico = '55666777'")
     # recomendações geradas e auditoria sem poluição
-    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 20  # inclui redes sociais, catálogo e materiais gráficos (migration 011)
+    assert q(fresh_db, "select count(*) n from lead_recommendations")[0]["n"] == 26  # + redes sociais, catálogo, materiais (011), loja virtual, Instagram, presença digital (015)
     assert q(fresh_db, "select count(*) n from audit_logs where table_name in ('leads','establishments')")[0]["n"] == 0
     # UF do município derivada dos estabelecimentos
     assert q(fresh_db, "select uf from municipalities where code = '6001'")[0]["uf"] == "RJ"
@@ -163,7 +164,7 @@ def test_migrate_em_banco_criado_manualmente(fresh_db):
     first = migrate(fresh_db)
     # estruturais reconhecidas pelos marcadores; a correção de dados (007) é reaplicada sem efeito
     assert first == ["20261116000007_digital_presence_fix.sql", "20261116000008_accountant_domains.sql"]
-    assert len(q(fresh_db, "select * from app_migrations")) == 12
+    assert len(q(fresh_db, "select * from app_migrations")) == 15
     # cópia de segurança dos dados comerciais antes de aplicar
     schemas = q(fresh_db, "select nspname from pg_namespace where nspname like 'backup_%%'")
     assert len(schemas) == 1
@@ -193,7 +194,7 @@ def test_migrate_em_banco_vazio(tmp_path):
     stub = Path(__file__).resolve().parents[2] / "supabase/tests/00_supabase_stub.sql"
     subprocess.run(["psql", url, "-q", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(stub)], check=True, capture_output=True)
     try:
-        assert len(migrate(url)) == 12
+        assert len(migrate(url)) == 15
         assert migrate(url) == []
     finally:
         with psycopg.connect(base, autocommit=True) as c:

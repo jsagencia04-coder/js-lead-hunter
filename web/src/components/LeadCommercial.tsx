@@ -62,8 +62,8 @@ const PROPOSAL_STATUS: Record<string, string> = {
   aceita: 'Aceita', recusada: 'Recusada', expirada: 'Expirada',
 }
 
-export function ProposalsSection({ leadId, canEdit, userId, onChanged }: {
-  leadId: string; canEdit: boolean; userId: string; onChanged: () => void
+export function ProposalsSection({ leadId, opportunityId, canEdit, userId, onChanged }: {
+  leadId: string; opportunityId?: string | null; canEdit: boolean; userId: string; onChanged: () => void
 }) {
   const [items, setItems] = useState<Proposal[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -88,7 +88,7 @@ export function ProposalsSection({ leadId, canEdit, userId, onChanged }: {
     if (value !== null && (Number.isNaN(value) || value < 0)) { setError('Valor inválido.'); return }
     setBusy(true); setError(null)
     const { error } = await supabase.from('lead_proposals').insert({
-      lead_id: leadId, title: title.trim(), amount: value, status, valid_until: validUntil || null,
+      lead_id: leadId, opportunity_id: opportunityId ?? null, title: title.trim(), amount: value, status, valid_until: validUntil || null,
       notes: notes.trim() || null, created_by: userId,
     })
     setBusy(false)

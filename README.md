@@ -4,6 +4,47 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 
 > A base pública do CNPJ é atualizada **por competência** (mensalmente), não em tempo real. O sistema mostra sempre a competência vigente e a data de referência dos dados. Situação cadastral ativa **não** comprova regularidade fiscal.
 
+## JS Lead Hunter 2.0 — módulos
+
+| Menu | O que faz |
+|---|---|
+| Visão geral | Indicadores **comerciais** (qualificados, contatados, respostas, reuniões, propostas, valor em negociação, receita contratada e recorrente, ticket médio, tempo médio de fechamento, conversão, follow-ups atrasados) separados dos **cadastrais** e da inteligência digital. Cada taxa mostra o denominador. |
+| Base de empresas | Pesquisa avançada da base da Receita (16 filtros, exportação). |
+| Mapa de oportunidades | Estados e municípios por volume e prioridade. |
+| Inteligência digital | Fila de pesquisa, resultados por canal, uso e custo por provedor, pausa/retomada, limites e orçamento. |
+| Central de oportunidades | Filtros prontos (sem site, sem Instagram, sem Facebook, site com problemas, sem Perfil no Google, recém-abertas, alta prioridade, diagnóstico pendente) + CNAE, UF, município, porte e serviço; agrupamentos com contagem no servidor; segmentos salvos; seleção em lote para adicionar ao CRM, distribuir em rodízio ou pesquisar de novo. |
+| CRM comercial | **Oportunidades** (separadas da empresa) em Kanban ou tabela, 12 etapas configuráveis, motivos de perda, reativação, várias oportunidades por empresa. |
+| Agenda e tarefas | Ligações, reuniões, e-mails, WhatsApp, visitas, follow-ups e pós-venda; atrasadas, hoje e próximas; contador de atrasos no menu. |
+| Propostas | Todas as propostas, situação, validade e valores. |
+| Clientes | Contratos, receita contratada e recorrente mensal. |
+| Serviços | Catálogo da JS Designer com preços, pacotes, recorrência, condições e regras de recomendação por evidência digital. |
+| Relatórios | Metas individuais e da equipe; desempenho por responsável, serviço, segmento e região (exporta CSV). |
+
+**Ficha da empresa:** assistente comercial (diagnóstico, resumo, serviço recomendado com preço, canal e abordagem sugeridos, sugestão de proposta, próxima ação e follow-up), oportunidades, tarefas, presença digital com evidências e confirmação/correção manual, mensagem sugerida (envio sempre manual, uma por vez), propostas, contratos, tags e histórico completo.
+
+### Motor de inteligência digital
+
+Processo separado da importação: `python -m lead_hunter intel` (workflow *Inteligência digital*, ou serviço `intel` no Docker).
+
+- **Fontes autorizadas:** domínio do e-mail cadastral (grátis), Google Places API (Perfil da Empresa no Google, site e telefone) e Brave Search API (site, Instagram, Facebook, LinkedIn). Instagram e Facebook nunca são acessados diretamente: vêm de links publicados no site oficial ou de resultados da pesquisa. Nada de raspagem, CAPTCHA ou evasão de bloqueios.
+- **Identidade:** índice de confiança 0–100 por canal, somando evidências (CNPJ na página +60, domínio igual ao do e-mail +40, telefone +30, nome +15/+25, município +15, logradouro e CEP +10) e descontando divergências (nome diferente −25, outro município −30). Verificado ≥ 70, possível ≥ 40 (configurável). Homônimos de outra cidade não são associados.
+- **Status por canal:** pendente, em processamento, encontrado e verificado, possível correspondência, não localizado, inconclusivo, erro temporário. **"Não localizado" só com pesquisa conclusiva** daquele canal; falha de conexão, bloqueio, provedor sem chave ou limite atingido nunca viram ausência.
+- **Auditoria do site (passiva):** disponibilidade, HTTPS, redirecionamentos, tempo de resposta, responsividade (viewport), SEO básico, contatos (telefone, e-mail, WhatsApp, formulário), até 8 links internos quebrados, domínio estacionado e rodapé desatualizado, com nota e evidências.
+- **Proteção SSRF:** só http/https nas portas 80/443, todos os IPs resolvidos precisam ser públicos, redirecionamentos validados um a um (máx. 5), IP real conferido após a conexão (DNS rebinding) e corpo limitado a 1,5 MB.
+- **Fila:** prioridade (recém-abertas, maior pontuação, leads em atendimento), lotes com concorrência, `SKIP LOCKED` entre workers, batimento e recuperação de itens presos, retentativa com espera exponencial (10 min → 24 h, até 6 tentativas), cache de consultas (30 dias), limites diários e orçamento por provedor (`provider_usage`), checkpoint e histórico de cada rodada (`enrichment_runs`), pausa e retomada pela interface, reverificação periódica (verificado 90 dias, inconclusivo 7…). Confirmações manuais nunca são sobrescritas. Se o banco passar de 95% do `DB_SIZE_LIMIT_MB`, o motor para.
+
+### Pontuação 2.0 (versionada e explicável)
+
+| Critério | Pontos | Regra |
+|---|---|---|
+| Oportunidade digital | 40 | só com evidência conclusiva: site não localizado após pesquisa (100%), domínio estacionado (90%), problemas técnicos graves (60%), Instagram não localizado com site verificado (40%), melhorias leves (30%) |
+| Compatibilidade com serviços | 25 | maior relevância entre as regras de CNAE |
+| Potencial do segmento | 15 | serviços da JS Designer aplicáveis ao CNAE (3 ou mais = integral) |
+| Recência | 10 | integral até 30 dias, metade até 90 |
+| Canais de contato | 10 | telefone 30%, e-mail 20%, canal digital verificado 50% |
+
+Cada lead guarda os pontos por critério, o **motivo** de cada um (`score_reasons`), a **versão das regras** (`scoring_versions`, nova versão a cada alteração de pesos, regras de CNAE ou serviços) e, separado do score, o **índice de confiança do diagnóstico**. Os pesos antigos (telefone, e-mail, porte) continuam editáveis em *Administração*.
+
 ## Arquitetura
 
 ```
@@ -21,12 +62,14 @@ Plataforma de inteligência comercial da **JS Designer**. Ela encontra empresas 
 
 | Pasta | Conteúdo |
 |---|---|
-| `supabase/migrations/` | Estrutura, segurança (RLS e auditoria), configuração comercial, pontuação, CRM e mapa |
+| `supabase/migrations/` | Estrutura, segurança (RLS e auditoria), configuração comercial, pontuação, CRM, preservação, inteligência digital (001–015, todas aditivas a partir da 011) |
 | `supabase/functions/invite-user/` | Convite de usuários (a `service_role` fica só no servidor) |
 | `supabase/tests/` | Testes SQL de segurança e regras de negócio |
-| `worker/` | Worker de importação (Python, DuckDB, Polars), com testes |
+| `worker/` | Worker de importação (Python, DuckDB, Polars), motor de inteligência digital (`lead_hunter/intel`), backup e testes |
 | `web/` | Interface |
 | `.github/workflows/ci.yml` | Roda todos os testes a cada envio ao GitHub |
+| `.github/workflows/worker.yml` | Importação + migrations + manutenção (agendado) |
+| `.github/workflows/inteligencia.yml` | Inteligência digital (agendado, processo separado) |
 
 ## Funcionalidades
 

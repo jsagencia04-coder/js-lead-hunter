@@ -25,9 +25,12 @@ MARKERS = {
     "20261116000007": "select false",
     "20261116000008": "select false",
     "20261116000010": "select to_regclass('public.lead_archive') is not null",
-    "20261116000009": "select exists (select 1 from public.scoring_rules where key = 'cnae_compativel' and points = 35)",
+    "20261116000009": "select to_regclass('public.scoring_versions') is not null or exists (select 1 from public.scoring_rules where key = 'cnae_compativel' and points = 35)",
     "20261125000011": "select to_regclass('public.lead_proposals') is not null",
     "20261126000012": "select to_regclass('public.registry_changes') is not null",
+    "20261126000013": "select to_regclass('public.opportunities') is not null",
+    "20261126000014": "select to_regclass('public.digital_channels') is not null",
+    "20261126000015": "select to_regclass('public.scoring_versions') is not null",
 }
 
 

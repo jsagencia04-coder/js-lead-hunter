@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import type { ChartItem, CommercialMetrics, DashboardMetrics, PerformanceRow } from '@/lib/types'
+import type { ChartItem, CommercialMetrics, DashboardMetrics } from '@/lib/types'
+import { PerfTable, type Executive } from '@/pages/Reports'
 import { brl, formatDate, formatDateTime, nf, UFS } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/AppLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -16,22 +17,27 @@ const JOB_STATUS: Record<string, string> = {
   validando: 'Validando', concluido: 'Concluída', falhou: 'Falhou', cancelado: 'Cancelada',
 }
 
+const n = (v: unknown) => (v === null || v === undefined ? undefined : Number(v))
+
 export default function Dashboard() {
   const { hasRole } = useAuth()
   const [uf, setUf] = useState('')
   const [data, setData] = useState<DashboardMetrics | null>(null)
   const [com, setCom] = useState<CommercialMetrics | null>(null)
+  const [ex, setEx] = useState<Executive | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   async function load() {
     setLoading(true)
     setError(null)
-    const [d, c] = await Promise.all([
+    const [d, c, x] = await Promise.all([
       supabase.rpc('dashboard_metrics', { p_uf: uf || null }),
       supabase.rpc('commercial_metrics', { p_uf: uf || null }),
+      supabase.rpc('executive_metrics', { p_uf: uf || null }),
     ])
-    if (d.error || c.error) setError((d.error ?? c.error)!.message)
+    if (d.error || c.error || x.error) setError((d.error ?? c.error ?? x.error)!.message)
+    setEx((x.data as Executive) ?? null)
     setData((d.data as DashboardMetrics) ?? null)
     setCom((c.data as CommercialMetrics) ?? null)
     setLoading(false)
@@ -45,8 +51,8 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader
-        title="Dashboard"
-        description="Empresas matrizes da base pública do CNPJ e andamento comercial."
+        title="Visão geral"
+        description="Indicadores reais do banco: comerciais (CRM) separados dos cadastrais (Receita Federal) e da inteligência digital."
         actions={
           <>
             <Select value={uf} onChange={(e) => setUf(e.target.value)} className="w-36" aria-label="Filtrar por UF">
@@ -94,29 +100,56 @@ export default function Dashboard() {
         </Alert>
       )}
 
-      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Prospecção comercial</h2>
+      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Indicadores comerciais · {formatDate(ex?.periodo?.de)} a {formatDate(ex?.periodo?.ate)} (receita do período)</h2>
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <Kpi label="Leads qualificados" value={n(ex?.comerciais.leads_qualificados)} />
+        <Kpi label="Leads contatados" value={n(ex?.comerciais.leads_contatados)} />
+        <Kpi label="Respostas recebidas" value={n(ex?.comerciais.respostas_recebidas)} />
+        <Kpi label="Reuniões agendadas" value={n(ex?.comerciais.reunioes_agendadas)} />
+        <Kpi label="Propostas enviadas" value={n(ex?.comerciais.propostas_enviadas)} />
+        <Kpi label="Valor em negociação" value={n(ex?.comerciais.valor_em_negociacao)} money />
+        <Kpi label="Receita contratada (período)" value={n(ex?.comerciais.receita_contratada_periodo)} money accent />
+        <Kpi label="Receita recorrente mensal" value={n(ex?.comerciais.receita_recorrente_mensal)} money accent />
+        <Kpi label="Ticket médio" value={n(ex?.comerciais.ticket_medio)} money />
+        <Kpi label="Tempo médio de fechamento (dias)" value={n(ex?.comerciais.tempo_medio_fechamento_dias)} />
+        <Kpi label="Conversão (oportunidades)" value={n(ex?.comerciais.taxa_conversao_oportunidades)} suffix="%" />
+        <Kpi label="Follow-ups atrasados" value={n(ex?.comerciais.follow_ups_atrasados)} />
+      </div>
+      {ex && (
+        <details className="mt-2 text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Como cada taxa é calculada</summary>
+          <ul className="mt-1 list-disc pl-5">
+            {Object.entries(ex.denominadores).map(([k, v]) => <li key={k}><strong>{k.replace(/_/g, ' ')}</strong>: {v}</li>)}
+            <li><strong>conversão de contatados</strong>: {ex.comerciais.taxa_conversao_contatados ?? '—'}%</li>
+          </ul>
+        </details>
+      )}
+
+      <h2 className="mb-3 mt-8 text-sm font-semibold text-muted-foreground">Inteligência e base histórica</h2>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <Kpi label="Total histórico de empresas" value={n(ex?.cadastrais.total_historico)} />
+        <Kpi label="Empresas pesquisadas" value={n(ex?.cadastrais.pesquisadas)} />
+        <Kpi label="Pendentes de pesquisa" value={n(ex?.cadastrais.pendentes_pesquisa)} />
+        <Kpi label="Sites localizados" value={n(ex?.cadastrais.sites_localizados)} />
+        <Kpi label="Instagram localizado" value={n(ex?.cadastrais.instagram_localizado)} />
+        <Kpi label="Facebook localizado" value={n(ex?.cadastrais.facebook_localizado)} />
+        <Kpi label="Perfil no Google localizado" value={n(ex?.cadastrais.google_localizado)} />
+        <Kpi label="Oportunidades digitais identificadas" value={n(ex?.cadastrais.oportunidades_identificadas)} accent />
         <Kpi label="Leads novos na competência" value={com?.leads_novos_competencia} />
         <Kpi label="Leads alta prioridade" value={com?.leads_alta} accent />
-        <Kpi label="Leads qualificados" value={com?.leads_qualificados} />
-        <Kpi label="Leads contatados" value={com?.leads_contatados} />
-        <Kpi label="Respostas recebidas" value={com?.respostas_recebidas} />
-        <Kpi label="Propostas enviadas" value={com?.propostas_enviadas} />
-        <Kpi label="Clientes convertidos" value={com?.clientes_convertidos} accent />
-        <Kpi label="Taxa de conversão" value={com?.taxa_conversao} suffix="%" />
-        <Kpi label="Valor em propostas" value={com?.propostas_valor} money />
-        <Kpi label="Propostas aceitas" value={com?.propostas_aceitas} />
-        <Kpi label="Follow-ups atrasados" value={com?.follow_ups_atrasados} />
+        <Kpi label="Clientes convertidos" value={com?.clientes_convertidos} />
         <Kpi label="Leads na base" value={com?.leads_total} />
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Qualificado: lead que saiu de “Novo lead” e não foi perdido. Contatado: tem contato registrado ou etapa a partir de “Primeiro contato”.
-        Taxa de conversão: convertidos ÷ contatados.
-      </p>
+      {ex && Array.isArray(ex.cadastrais.novas_por_competencia) && (
+        <p className="mt-2 text-xs text-muted-foreground">Novas empresas por competência: {(ex.cadastrais.novas_por_competencia as { competencia: string; total: number }[])
+          .map((x) => `${x.competencia}: ${nf.format(x.total)}`).join(' · ') || '—'}</p>
+      )}
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <PerfTable title="Desempenho por serviço (principal recomendação)" rows={com?.por_servico} />
-        <PerfTable title="Desempenho por responsável" rows={com?.por_responsavel} />
+        <PerfTable title="Desempenho por responsável" rows={ex?.por_responsavel ?? []} />
+        <PerfTable title="Desempenho por serviço" rows={ex?.por_servico ?? []} />
+        <PerfTable title="Desempenho por segmento" rows={ex?.por_segmento ?? []} />
+        <PerfTable title="Desempenho por região" rows={ex?.por_regiao ?? []} />
       </div>
 
       <h2 className="mb-3 mt-8 text-sm font-semibold text-muted-foreground">Base de empresas (Receita Federal)</h2>
@@ -143,41 +176,6 @@ export default function Dashboard() {
         <BarList title="Abertura por mês (últimos 12 meses)" items={data?.por_mes_abertura} keepOrder />
       </div>
     </>
-  )
-}
-
-function PerfTable({ title, rows }: { title: string; rows: PerformanceRow[] | undefined }) {
-  const list = (rows ?? []).slice(0, 12)
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        {list.length === 0 && <CardDescription>Sem movimentação comercial registrada.</CardDescription>}
-      </CardHeader>
-      {list.length > 0 && (
-        <CardContent>
-          <table className="w-full text-xs">
-            <thead className="text-muted-foreground">
-              <tr><th className="text-left font-normal">Nome</th><th className="text-right font-normal">Leads</th>
-                <th className="text-right font-normal">Contatados</th><th className="text-right font-normal">Propostas</th>
-                <th className="text-right font-normal">Convertidos</th><th className="text-right font-normal">Conversão</th></tr>
-            </thead>
-            <tbody>
-              {list.map((r) => (
-                <tr key={r.label} className="border-t">
-                  <td className="py-1.5 pr-2">{r.label}</td>
-                  <td className="text-right tabular-nums">{nf.format(r.leads)}</td>
-                  <td className="text-right tabular-nums">{nf.format(r.contatados)}</td>
-                  <td className="text-right tabular-nums">{nf.format(r.propostas)}</td>
-                  <td className="text-right tabular-nums">{nf.format(r.convertidos)}</td>
-                  <td className="text-right tabular-nums">{r.contatados ? `${Math.round((100 * r.convertidos) / r.contatados)}%` : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </CardContent>
-      )}
-    </Card>
   )
 }
 

@@ -12,6 +12,13 @@ import Imports from '@/pages/Imports'
 import Admin from '@/pages/Admin'
 import Crm from '@/pages/Crm'
 import MapPage from '@/pages/MapPage'
+import Agenda from '@/pages/Agenda'
+import Proposals from '@/pages/Proposals'
+import Clients from '@/pages/Clients'
+import Services from '@/pages/Services'
+import Reports from '@/pages/Reports'
+import Intelligence from '@/pages/Intelligence'
+import Opportunities from '@/pages/Opportunities'
 
 export default function App() {
   if (!isSupabaseConfigured) return <SetupRequired />
@@ -26,6 +33,13 @@ export default function App() {
             <Route path="leads" element={<Leads />} />
             <Route path="mapa" element={<MapPage />} />
             <Route path="crm" element={<Crm />} />
+            <Route path="inteligencia" element={<Intelligence />} />
+            <Route path="oportunidades" element={<Opportunities />} />
+            <Route path="agenda" element={<Agenda />} />
+            <Route path="propostas" element={<Proposals />} />
+            <Route path="clientes" element={<Clients />} />
+            <Route path="servicos" element={<Services />} />
+            <Route path="relatorios" element={<Reports />} />
             <Route path="importacao" element={<RequireRole roles={['admin', 'gestor']}><Imports /></RequireRole>} />
             <Route path="admin" element={<RequireRole roles={['admin']}><Admin /></RequireRole>} />
           </Route>

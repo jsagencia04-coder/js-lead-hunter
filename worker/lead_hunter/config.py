@@ -69,6 +69,8 @@ class Settings:
     enrich_enabled: bool = True        # verificação de presença digital dos leads
     enrich_batch: int = 3000           # leads verificados por rodada
     db_size_limit_mb: int = 0          # limite do plano do banco (0 = sem trava); Supabase gratuito: 500
+    intel_in_worker: bool = False      # roda a inteligência digital dentro do worker (VPS com processo único)
+    intel_minutes: int = 10
 
     @property
     def s3_enabled(self) -> bool:
@@ -109,4 +111,6 @@ class Settings:
             enrich_enabled=_bool("ENRICH_ENABLED", True),
             enrich_batch=_int("ENRICH_BATCH", 3000),
             db_size_limit_mb=_int("DB_SIZE_LIMIT_MB", 0),
+            intel_in_worker=_bool("INTEL_IN_WORKER", False),
+            intel_minutes=_int("INTEL_MINUTES", 10),
         )

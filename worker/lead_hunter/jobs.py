@@ -387,6 +387,8 @@ class Worker:
                 if time.monotonic() - self.last_check > self.s.check_interval_hours * 3600:
                     self.last_check = time.monotonic()
                     self.scheduled_check()
+                if self.s.intel_in_worker:
+                    self.intel(minutes=self.s.intel_minutes)
             except psycopg.OperationalError:
                 log.exception("Conexão com o banco perdida; reconectando em 30s")
                 time.sleep(30)
@@ -414,7 +416,8 @@ class Worker:
             if self.deadline and time.monotonic() > self.deadline:
                 break
             job = self.claim()
-        self.enrich()
+        if self.s.intel_in_worker:
+            self.intel(minutes=self.s.intel_minutes)
         self.archive()
         self.heartbeat()
         after = self.inventory("fim da rodada")
@@ -431,6 +434,17 @@ class Worker:
             run_scheduled(self.s.database_url)
         except Exception:  # noqa: BLE001 — nunca derruba o worker
             log.exception("Falha no arquivamento de leads")
+
+    def intel(self, minutes: int = 10) -> None:
+        """Rodada curta de inteligência digital (modo contínuo/VPS num único processo)."""
+        from .intel.engine import IntelEngine
+
+        try:
+            stats = IntelEngine(self.s.database_url, db_size_limit_mb=self.s.db_size_limit_mb).run(
+                deadline=time.monotonic() + minutes * 60)
+            log.info("Inteligência digital: %s", json.dumps(stats, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 — nunca derruba o worker
+            log.exception("Falha na inteligência digital")
 
     def enrich(self) -> None:
         """Verifica a presença digital de um lote de leads (usa o tempo que sobrar da rodada)."""

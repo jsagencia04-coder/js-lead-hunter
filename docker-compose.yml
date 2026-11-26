@@ -1,15 +1,47 @@
-# Sobe o worker de importação numa VPS:
-#   cp worker/.env.example worker/.env   (preencha DATABASE_URL)
+# Produção numa VPS (recomendado): três processos separados
+#   cp worker/.env.example worker/.env   (preencha DATABASE_URL e, se quiser, as chaves de pesquisa)
 #   docker compose up -d --build
-#   docker compose logs -f worker
+#   docker compose logs -f worker intel
+#
+#   worker      importação da Receita (atende a Central de importação e verifica nova competência)
+#   intel       inteligência digital (fila de pesquisa de site, redes e Perfil no Google)
+#   manutencao  inventário diário e arquivamento (só se um administrador o religar)
+x-base: &base
+  build:
+    context: .
+    dockerfile: worker/Dockerfile
+  env_file: ./worker/.env
+  volumes:
+    - lead_hunter_data:/data
+  restart: unless-stopped
+  stop_grace_period: 1m
+
 services:
+  migrate:
+    <<: *base
+    command: ["migrate"]
+    restart: "no"
+
   worker:
-    build: ./worker
-    env_file: ./worker/.env
-    volumes:
-      - lead_hunter_data:/data
-    restart: unless-stopped
-    stop_grace_period: 1m
+    <<: *base
+    command: ["run"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  intel:
+    <<: *base
+    entrypoint: ["sh", "-c", "while true; do python -m lead_hunter intel --minutos 50; sleep 600; done"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  manutencao:
+    <<: *base
+    entrypoint: ["sh", "-c", "while true; do python -m lead_hunter maintenance; sleep 86400; done"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   lead_hunter_data:
